@@ -19,3 +19,15 @@ export interface RegisterTechnicianPayload extends BaseRegisterPayload {
   specialty: string;
   bioDescription?: string;
 }
+
+export interface LoginPayload {
+  email: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  id: number;
+  email: string;
+  role: string;
+  token: string;
+}
