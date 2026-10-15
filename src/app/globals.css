@@ -1,8 +1,9 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Forzamos colores claros para el MVP, evitando problemas con el Modo Oscuro */
+  --background: #f3f4f6; /* Fondo gris muy claro, estilo app móvil */
+  --foreground: #1f2937; /* Texto gris muy oscuro, casi negro */
 }
 
 @theme inline {
@@ -12,15 +13,11 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  /* Anti-aliasing para que las fuentes se vean más nítidas en móviles */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
