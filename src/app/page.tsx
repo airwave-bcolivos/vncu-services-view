@@ -1,9 +1,11 @@
 import Link from "next/link";
+import Header from "@/components/header/header";
 
 export default function Home() {
   return (
     <main className="min-h-screen flex flex-col bg-gray-50">
-      
+      <Header />
+
       {/* SECCIÓN HERO: Le agregamos min-h-[70vh] para que ocupe el 70% del alto de la pantalla, empujando lo demás hacia abajo */}
       <section className="flex flex-col items-center justify-center text-center px-6 min-h-[70vh] bg-white shadow-sm">
         <h1 className="text-4xl md:text-5xl font-extrabold text-gray-900 tracking-tight mb-4">
