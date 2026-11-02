@@ -28,6 +28,7 @@ export default function LoginPage() {
       // 2. Guardamos los datos simulando una sesión
       localStorage.setItem("vncu_token", response.token);
       localStorage.setItem("vncu_role", response.role);
+      localStorage.setItem("vncu_user_id", response.id);
 
       // 3. Redirigimos según el rol
       if (response.role === "CLIENT") {
