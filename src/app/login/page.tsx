@@ -29,6 +29,9 @@ export default function LoginPage() {
       localStorage.setItem("vncu_token", response.token);
       localStorage.setItem("vncu_role", response.role);
 
+      // 3. Actualizamos el Header
+      window.dispatchEvent(new Event("auth-change"));
+
       // 3. Redirigimos según el rol
       if (response.role === "CLIENT") {
         router.push("/dashboard/client"); 
