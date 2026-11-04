@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { authService } from "../../services/auth.service";
 import { LoginPayload } from "../../types/auth";
+import Header from "@/components/header/header";
 
 export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
@@ -28,6 +29,9 @@ export default function LoginPage() {
       localStorage.setItem("vncu_token", response.token);
       localStorage.setItem("vncu_role", response.role);
 
+      // 3. Actualizamos el Header
+      window.dispatchEvent(new Event("auth-change"));
+
       // 3. Redirigimos según el rol
       if (response.role === "CLIENT") {
         router.push("/dashboard/client"); 
@@ -47,7 +51,10 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-6">
+    <main className="min-h-screen flex flex-col bg-gray-50">
+      <Header />
+
+      <section className="flex flex-1 items-center justify-center p-6">
       <div className="w-full max-w-md bg-white rounded-xl shadow-md p-8">
         
         <div className="text-center mb-8">
@@ -108,8 +115,8 @@ export default function LoginPage() {
             Regístrate aquí
           </Link>
         </div>
-
       </div>
+      </section>
     </main>
   );
 }

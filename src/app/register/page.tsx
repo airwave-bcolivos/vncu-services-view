@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 // Importamos el componente que acabamos de crear
 import RegisterForm from "@/components/auth/RegisterForm";
+import Header from "@/components/header/header";
 
 type Role = "CLIENT" | "TECHNICIAN" | null;
 
@@ -13,7 +14,9 @@ export default function RegisterPage() {
   // VISTA 1: Selección de Rol
   if (!selectedRole) {
     return (
-      <main className="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-6">
+      <main className="min-h-screen flex flex-col bg-gray-50">
+        <Header />
+        <section className="flex flex-1 items-center justify-center p-6">
         <div className="w-full max-w-2xl bg-white rounded-xl shadow-md p-8 text-center">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Únete a Vincu</h1>
           <p className="text-gray-600 mb-8">¿Cómo deseas usar la plataforma?</p>
@@ -45,6 +48,7 @@ export default function RegisterPage() {
             </Link>
           </div>
         </div>
+        </section>
       </main>
     );
   }
