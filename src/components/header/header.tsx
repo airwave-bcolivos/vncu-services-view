@@ -146,20 +146,14 @@ export default function Header() {
                                         {isClient && (
                                             <>
                                                 <MenuLink
-                                                    href="/dashboard/client"
-                                                    title="Mi panel"
-                                                    description="Resumen de tu cuenta"
-                                                    onClick={closeMenu}
-                                                />
-                                                <MenuLink
                                                     href="/dashboard/client/requests"
-                                                    title="Mis solicitudes"
-                                                    description="Administra tus servicios"
+                                                    title="Mis Publicaciones"
+                                                    description="Administra tus publicaciones"
                                                     onClick={closeMenu}
                                                 />
                                                 <MenuLink
                                                     href="/dashboard/client/profile"
-                                                    title="Mi perfil"
+                                                    title="Mi Perfil"
                                                     description="Tus datos personales"
                                                     onClick={closeMenu}
                                                 />
@@ -169,15 +163,9 @@ export default function Header() {
                                         {isTechnician && (
                                             <>
                                                 <MenuLink
-                                                    href="/dashboard/technician"
-                                                    title="Mi panel"
-                                                    description="Resumen de actividad"
-                                                    onClick={closeMenu}
-                                                />
-                                                <MenuLink
                                                     href="/dashboard/technician/requests"
-                                                    title="Solicitudes"
-                                                    description="Gestiona tus servicios"
+                                                    title="Solicitudes disponibles"
+                                                    description="Consulta solicitudes de clientes"
                                                     onClick={closeMenu}
                                                 />
                                                 <MenuLink
@@ -223,6 +211,27 @@ function MenuLink({
     description: string;
     onClick: () => void;
 }) {
+    const icons: Record<string, React.ReactNode> = {
+        "Mis solicitudes": (
+            <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+        ),
+        "Solicitudes disponibles": (
+            <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+        ),
+        "Mi perfil": (
+            <>
+                <circle cx="12" cy="8" r="4" />
+                <path d="M5 21a7 7 0 0 1 14 0" />
+            </>
+        ),
+        "Mi Perfil": (
+            <>
+                <circle cx="12" cy="8" r="4" />
+                <path d="M5 21a7 7 0 0 1 14 0" />
+            </>
+        )
+    };
+
     return (
         <Link
             href={href}
@@ -230,8 +239,16 @@ function MenuLink({
             className="group flex items-center gap-3 rounded-xl px-3 py-3 hover:bg-blue-50"
         >
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-100 text-gray-600 group-hover:bg-blue-100 group-hover:text-blue-700">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
-                    <path d="M3 10.5 12 3l9 7.5M5 9v11h14V9M9 20v-7h6v7" />
+                <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    className="h-5 w-5"
+                >
+                    {icons[title] || <circle cx="12" cy="12" r="8" />}
                 </svg>
             </span>
 
