@@ -146,13 +146,13 @@ export default function Header() {
                                         {isClient && (
                                             <>
                                                 <MenuLink
-                                                    href="/dashboard/client/requests"
+                                                    href="/dashboard/client"
                                                     title="Mis Publicaciones"
                                                     description="Administra tus publicaciones"
                                                     onClick={closeMenu}
                                                 />
                                                 <MenuLink
-                                                    href="/dashboard/client/profile"
+                                                    href="/profile"
                                                     title="Mi Perfil"
                                                     description="Tus datos personales"
                                                     onClick={closeMenu}
