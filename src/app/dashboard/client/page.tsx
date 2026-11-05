@@ -1,11 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
 import Header from "@/components/header/header";
 import { ubigeoService, DistritoDto } from "../../../services/ubigeo.service";
-import { jobService, JobPayload } from "../../../services/job.service";
-import { api } from "@/lib/axios";
+import { jobService, JobPayload, JobFilters } from "../../../services/job.service";
 
 export interface Oferta extends JobPayload {
     id: string;
@@ -19,11 +17,16 @@ export interface Oferta extends JobPayload {
 const OFICIOS_DISPONIBLES = [
     { id: "Electricidad", label: "Electricidad", value: "ELECTRICISTA", icon: "⚡" },
     { id: "Gasfitería", label: "Gasfitería", value: "GASFITERO", icon: "🚰" },
-    { id: "Pintura", label: "Pintura", value: "PINTOR", icon: "🎨" },
-    { id: "Albañilería", label: "Albañilería", value: "ALBANIL", icon: "🧱" },
-    { id: "Limpieza", label: "Limpieza", icon: "LIMPIEZA", iconSymbol: "🧹" },
+    { id: "Pintura", label: "Pintura", value: "PINTURA", icon: "🎨" },
+    { id: "Albañilería", label: "Albañilería", value: "MAESTRO_DE_OBRAS", icon: "🧱" },
+    { id: "Limpieza", label: "Limpieza", value: "LIMPIEZA", icon: "🧹" },
     { id: "Electrodomésticos", label: "Rep. Electrodomésticos", value: "TECNICO_ELECTRODOMESTICOS", icon: "🔧" },
 ];
+
+const FILTROS_INICIALES = {
+    createdFrom: "", createdTo: "", specialty: "", minBudget: "", maxBudget: "",
+    status: "", sortBy: "createdAt", sortDirection: "DESC" as "ASC" | "DESC", size: "10",
+};
 
 export default function ClientDashboardPage() {
     const [isLoading, setIsLoading] = useState(false);
@@ -34,8 +37,14 @@ export default function ClientDashboardPage() {
     const MAX_TITULO_LENGTH = 150;
     const MAX_DESCRIPCION_LENGTH = 500;
 
-    const [filtroEstado, setFiltroEstado] = useState<string>("TODAS");
-    const [busqueda, setBusqueda] = useState<string>("");
+    const [filtros, setFiltros] = useState(FILTROS_INICIALES);
+    const [clientId, setClientId] = useState("");
+    const [consulta, setConsulta] = useState<JobFilters>({ clientId: "", sortBy: "createdAt", sortDirection: "DESC", page: 0, size: 10 });
+    const [recarga, setRecarga] = useState(0);
+    const [cargandoLista, setCargandoLista] = useState(true);
+    const [errorLista, setErrorLista] = useState<string | null>(null);
+    const [total, setTotal] = useState(0);
+    const [totalPaginas, setTotalPaginas] = useState(0);
 
     const [ofertas, setOfertas] = useState<Oferta[]>([]);
 
@@ -51,6 +60,22 @@ export default function ClientDashboardPage() {
 
     const [ofertaSeleccionada, setOfertaSeleccionada] = useState<Oferta | null>(null);
     const [modoEdicion, setModoEdicion] = useState(false);
+
+    useEffect(() => {
+        try {
+            const storedClientId = localStorage.getItem("vncu_user_id")?.trim();
+            if (!storedClientId) {
+                setErrorLista("No se encontró el cliente de la sesión. Inicia sesión nuevamente.");
+                setCargandoLista(false);
+                return;
+            }
+            setClientId(storedClientId);
+            setConsulta((prev) => ({ ...prev, clientId: storedClientId }));
+        } catch {
+            setErrorLista("No se pudo acceder a los datos de la sesión. Inicia sesión nuevamente.");
+            setCargandoLista(false);
+        }
+    }, []);
 
     // Cargar distritos al montar
     useEffect(() => {
@@ -69,6 +94,56 @@ export default function ClientDashboardPage() {
 
         cargarDistritos();
     }, []);
+
+    useEffect(() => {
+        if (!consulta.clientId) return;
+        const controller = new AbortController();
+        const cargarSolicitudes = async () => {
+            setCargandoLista(true);
+            setErrorLista(null);
+            try {
+                const data = await jobService.getJobs(consulta, controller.signal);
+                if (controller.signal.aborted) return;
+                setOfertas(data.content.map((job) => ({
+                    ...job,
+                    clientId: consulta.clientId,
+                    description: job.description ?? "",
+                    specificAddress: job.specificAddress ?? "",
+                    latitude: null,
+                    longitude: null,
+                    nombreDistrito: job.ubigeoDistrictName,
+                    fechaCreacion: new Date(job.createdAt).toLocaleDateString("es-PE"),
+                    estado: job.status === "OPEN" ? "ACTIVA" : job.status,
+                    propuestasCount: job.propuestasCount ?? 0,
+                })));
+                setTotal(data.totalElements);
+                setTotalPaginas(data.totalPages);
+            } catch {
+                if (!controller.signal.aborted) setErrorLista("No se pudieron cargar las solicitudes. Intenta nuevamente.");
+            } finally {
+                if (!controller.signal.aborted) setCargandoLista(false);
+            }
+        };
+        void cargarSolicitudes();
+        return () => controller.abort();
+    }, [consulta, recarga]);
+
+    const aplicarFiltros = (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        setConsulta({
+            clientId,
+            createdFrom: filtros.createdFrom || undefined,
+            createdTo: filtros.createdTo || undefined,
+            specialty: filtros.specialty || undefined,
+            status: filtros.status || undefined,
+            minBudget: filtros.minBudget === "" ? undefined : Number(filtros.minBudget),
+            maxBudget: filtros.maxBudget === "" ? undefined : Number(filtros.maxBudget),
+            sortBy: filtros.sortBy,
+            sortDirection: filtros.sortDirection,
+            page: 0,
+            size: Number(filtros.size),
+        });
+    };
 
     const sanitizarTexto = (texto: string) => {
         return texto
@@ -124,13 +199,15 @@ export default function ClientDashboardPage() {
             return;
         }
 
+        if (!clientId) {
+            setErrorMessage("No se encontró el cliente de la sesión. Inicia sesión nuevamente.");
+            return;
+        }
+
         setIsLoading(true);
 
-        // TODO: Reemplazar clientId dinámicamente según la sesión actual del usuario autenticado
-        const clientIdFijo = "c789dba7-3edc-424d-85a3-817780c30242";
-
         const payload: JobPayload = {
-            clientId: clientIdFijo,
+            clientId,
             title: form.titulo.trim(),
             specialty: form.oficio,
             description: sanitizarTexto(form.descripcion.trim()),
@@ -147,24 +224,13 @@ export default function ClientDashboardPage() {
                 setSuccessMessage("Solicitud actualizada correctamente.");
                 cerrarModal();
             } else {
-                const responseData = await jobService.createJob(payload);
-
-                const distritoEncontrado = distritos.find((d) => d.id === responseData.ubigeoDistrictId);
-
-                const nuevaOferta: Oferta = {
-                    ...payload,
-                    id: responseData.id,
-                    fechaCreacion: new Date(responseData.createdAt).toLocaleDateString("es-PE"),
-                    estado: responseData.status === "OPEN" ? "ACTIVA" : responseData.status,
-                    propuestasCount: 0,
-                    nombreDistrito: distritoEncontrado ? distritoEncontrado.name : "Desconocido",
-                };
-
-                setOfertas([nuevaOferta, ...ofertas]);
+                await jobService.createJob(payload);
+                setConsulta((prev) => ({ ...prev, page: 0 }));
+                setRecarga((prev) => prev + 1);
                 setSuccessMessage("¡Tu solicitud se ha publicado exitosamente!");
                 resetForm();
             }
-        } catch (error: any) {
+        } catch (error) {
             console.error(error);
             setErrorMessage("Ocurrió un error al procesar la solicitud con el servidor. Inténtalo de nuevo.");
         } finally {
@@ -223,15 +289,6 @@ export default function ClientDashboardPage() {
         }).format(monto);
     };
 
-    const ofertasFiltradas = ofertas.filter((item) => {
-        const cumpleEstado = filtroEstado === "TODAS" || item.estado === filtroEstado;
-        const cumpleBusqueda =
-            item.title.toLowerCase().includes(busqueda.toLowerCase()) ||
-            item.description.toLowerCase().includes(busqueda.toLowerCase()) ||
-            item.specificAddress.toLowerCase().includes(busqueda.toLowerCase());
-        return cumpleEstado && cumpleBusqueda;
-    });
-
     return (
         <main className="min-h-screen flex flex-col bg-[#F8FAFC] font-sans text-gray-900 selection:bg-blue-100 selection:text-blue-600">
             <Header />
@@ -255,14 +312,14 @@ export default function ClientDashboardPage() {
 
                     <div className="flex items-center gap-3">
                         <div className="px-5 py-3.5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 text-center min-w-[110px] transform hover:scale-105 transition-all duration-300 shadow-sm">
-                            <span className="block text-2xl font-black text-white">{ofertas.length}</span>
-                            <span className="text-[11px] font-medium text-blue-200 uppercase tracking-wider">Publicadas</span>
+                            <span className="block text-2xl font-black text-white">{total}</span>
+                            <span className="text-[11px] font-medium text-blue-200 uppercase tracking-wider">Resultados</span>
                         </div>
                         <div className="px-5 py-3.5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 text-center min-w-[110px] transform hover:scale-105 transition-all duration-300 shadow-sm">
                             <span className="block text-2xl font-black text-blue-300">
                                 {ofertas.filter((o) => o.estado === "ACTIVA").length}
                             </span>
-                            <span className="text-[11px] font-medium text-blue-200 uppercase tracking-wider">Activas</span>
+                            <span className="text-[11px] font-medium text-blue-200 uppercase tracking-wider">Activas en esta página</span>
                         </div>
                     </div>
                 </div>
@@ -418,7 +475,7 @@ export default function ClientDashboardPage() {
 
                         <button
                             type="submit"
-                            disabled={isLoading}
+                            disabled={isLoading || !clientId}
                             className="w-full md:w-auto px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all duration-300 transform hover:scale-[1.02] active:scale-95 shadow-lg shadow-blue-600/20 hover:shadow-blue-600/30 text-sm disabled:opacity-50"
                         >
                             {isLoading ? "Publicando..." : "Publicar Solicitud"}
@@ -434,40 +491,72 @@ export default function ClientDashboardPage() {
                             <p className="text-xs text-gray-400 mt-0.5">Administra tu lista de requerimientos y consulta las ofertas recibidas.</p>
                         </div>
                         <span className="text-xs font-semibold text-blue-600 bg-blue-50 border border-blue-100 px-3 py-1.5 rounded-full self-start sm:self-auto">
-                            {ofertasFiltradas.length} de {ofertas.length} requerimientos
+                            {ofertas.length} de {total} requerimientos
                         </span>
                     </div>
 
-                    <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-white p-3 rounded-2xl border border-gray-200/70 shadow-sm">
-                        <div className="flex items-center gap-1.5 overflow-x-auto w-full sm:w-auto pb-2 sm:pb-0">
-                            {["TODAS", "ACTIVA", "EN_PROCESO", "FINALIZADA"].map((estado) => (
-                                <button
-                                    key={estado}
-                                    type="button"
-                                    onClick={() => setFiltroEstado(estado)}
-                                    className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap ${
-                                        filtroEstado === estado
-                                            ? "bg-blue-600 text-white shadow-sm"
-                                            : "bg-gray-100/80 text-gray-600 hover:bg-gray-200/60"
-                                    }`}
-                                >
-                                    {estado === "TODAS" ? "Todas" : estado === "ACTIVA" ? "Activas" : estado === "EN_PROCESO" ? "En Proceso" : "Finalizadas"}
-                                </button>
-                            ))}
+                    <form onSubmit={aplicarFiltros} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 bg-white p-4 rounded-2xl border border-gray-200/70 shadow-sm">
+                        {([
+                            ["createdFrom", "Creada desde", "date"],
+                            ["createdTo", "Creada hasta", "date"],
+                            ["minBudget", "Presupuesto mínimo (S/)", "number"],
+                            ["maxBudget", "Presupuesto máximo (S/)", "number"],
+                        ] as const).map(([name, label, type]) => (
+                            <label key={name} className="text-xs font-semibold text-gray-600 space-y-2">
+                                <span>{label}</span>
+                                <input type={type} value={filtros[name]} min={type === "number" ? (name === "maxBudget" ? filtros.minBudget || "0" : "0") : name === "createdTo" ? filtros.createdFrom : undefined} step={type === "number" ? "0.01" : undefined}
+                                    onChange={(e) => setFiltros((prev) => ({ ...prev, [name]: e.target.value }))}
+                                    className="block w-full p-2 border border-gray-200 rounded-xl" />
+                            </label>
+                        ))}
+                        <label className="text-xs font-semibold text-gray-600 space-y-2">
+                            <span>Oficio</span>
+                            <select value={filtros.specialty} onChange={(e) => setFiltros((prev) => ({ ...prev, specialty: e.target.value }))} className="block w-full p-2 border border-gray-200 rounded-xl">
+                                <option value="">Todos</option>
+                                {OFICIOS_DISPONIBLES.map((oficio) => <option key={oficio.value} value={oficio.value}>{oficio.label}</option>)}
+                            </select>
+                        </label>
+                        <label className="text-xs font-semibold text-gray-600 space-y-2">
+                            <span>Estado (opcional)</span>
+                            <select value={filtros.status} onChange={(e) => setFiltros((prev) => ({ ...prev, status: e.target.value }))} className="block w-full p-2 border border-gray-200 rounded-xl">
+                                <option value="">Todos</option>
+                                <option value="OPEN">Publicada</option>
+                                <option value="IN_PROGRESS">En progreso</option>
+                                <option value="COMPLETED">Completada</option>
+                                <option value="CANCELED">Cancelada</option>
+                            </select>
+                        </label>
+                        <label className="text-xs font-semibold text-gray-600 space-y-2">
+                            <span>Ordenar por</span>
+                            <select value={filtros.sortBy} onChange={(e) => setFiltros((prev) => ({ ...prev, sortBy: e.target.value }))} className="block w-full p-2 border border-gray-200 rounded-xl">
+                                <option value="createdAt">Fecha de creación</option>
+                                <option value="maxBudget">Presupuesto máximo</option>
+                            </select>
+                        </label>
+                        <label className="text-xs font-semibold text-gray-600 space-y-2">
+                            <span>Dirección del orden</span>
+                            <select value={filtros.sortDirection} onChange={(e) => setFiltros((prev) => ({ ...prev, sortDirection: e.target.value as "ASC" | "DESC" }))} className="block w-full p-2 border border-gray-200 rounded-xl">
+                                <option value="DESC">Descendente</option><option value="ASC">Ascendente</option>
+                            </select>
+                        </label>
+                        <label className="text-xs font-semibold text-gray-600 space-y-2">
+                            <span>Solicitudes por página</span>
+                            <select value={filtros.size} onChange={(e) => setFiltros((prev) => ({ ...prev, size: e.target.value }))} className="block w-full p-2 border border-gray-200 rounded-xl">
+                                {[10, 20, 50].map((size) => <option key={size} value={size}>{size}</option>)}
+                            </select>
+                        </label>
+                        <div className="flex gap-3 sm:col-span-2 lg:col-span-3">
+                            <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold">Aplicar filtros</button>
+                            <button type="button" onClick={() => { setFiltros(FILTROS_INICIALES); setConsulta({ clientId, sortBy: "createdAt", sortDirection: "DESC", page: 0, size: 10 }); }} className="px-4 py-2 bg-gray-100 rounded-xl text-xs font-semibold">Limpiar filtros</button>
                         </div>
+                    </form>
 
-                        <div className="w-full sm:w-64">
-                            <input
-                                type="text"
-                                value={busqueda}
-                                onChange={(e) => setBusqueda(e.target.value)}
-                                placeholder="Buscar solicitud..."
-                                className="w-full px-3.5 py-1.5 bg-gray-50 border border-gray-200 rounded-xl text-xs outline-none focus:bg-white focus:border-blue-600 transition-all"
-                            />
+                    {cargandoLista ? <p role="status" className="text-sm text-gray-500">Cargando solicitudes...</p> : errorLista ? (
+                        <div role="alert" className="p-4 bg-red-50 text-red-600 rounded-xl text-sm">
+                            {errorLista}
+                            <button type="button" onClick={() => setRecarga((prev) => prev + 1)} className="ml-3 underline">Reintentar</button>
                         </div>
-                    </div>
-
-                    {ofertasFiltradas.length === 0 ? (
+                    ) : ofertas.length === 0 ? (
                         <div className="bg-white rounded-3xl border border-gray-200/70 p-12 text-center space-y-3 transition-all duration-300">
                             <p className="text-gray-300 text-4xl">📂</p>
                             <p className="text-sm font-semibold text-gray-600">No se encontraron solicitudes</p>
@@ -475,7 +564,7 @@ export default function ClientDashboardPage() {
                         </div>
                     ) : (
                         <div className="grid grid-cols-1 gap-4">
-                            {ofertasFiltradas.map((item) => (
+                            {ofertas.map((item) => (
                                 <div
                                     key={item.id}
                                     className="group bg-white rounded-3xl border border-gray-200/70 p-6 hover:border-blue-300 hover:shadow-lg transition-all duration-300 transform hover:-translate-y-1 flex flex-col md:flex-row justify-between items-start md:items-center gap-6"
@@ -509,7 +598,7 @@ export default function ClientDashboardPage() {
                                         <div className="flex items-center gap-4 text-xs text-gray-400">
                                             <div className="flex items-center gap-1">
                                                 <span>📍</span>
-                                                <span className="font-medium text-gray-600">{item.specificAddress}, {item.nombreDistrito}</span>
+                                                <span className="font-medium text-gray-600">{[item.specificAddress, item.nombreDistrito ?? distritos.find((distrito) => distrito.id === item.ubigeoDistrictId)?.name].filter(Boolean).join(", ") || "Distrito no disponible"}</span>
                                             </div>
                                             <div className="flex items-center gap-1 text-blue-600 font-semibold">
                                                 <span>💬</span>
@@ -550,6 +639,11 @@ export default function ClientDashboardPage() {
                             ))}
                         </div>
                     )}
+                    <div className="flex items-center justify-between gap-3 text-xs">
+                        <button type="button" disabled={cargandoLista || consulta.page === 0} onClick={() => setConsulta((prev) => ({ ...prev, page: prev.page - 1 }))} className="px-4 py-2 bg-white border rounded-xl disabled:opacity-40">Anterior</button>
+                        <span>Página {totalPaginas === 0 ? 0 : consulta.page + 1} de {totalPaginas}</span>
+                        <button type="button" disabled={cargandoLista || consulta.page + 1 >= totalPaginas} onClick={() => setConsulta((prev) => ({ ...prev, page: prev.page + 1 }))} className="px-4 py-2 bg-white border rounded-xl disabled:opacity-40">Siguiente</button>
+                    </div>
                 </div>
             </section>
 
@@ -585,7 +679,7 @@ export default function ClientDashboardPage() {
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-400">Dirección:</span>
-                                    <span className="font-semibold text-gray-800">{ofertaSeleccionada.specificAddress}</span>
+                                    <span className="font-semibold text-gray-800">{ofertaSeleccionada.specificAddress || "No incluida en el listado"}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-400">Presupuesto Máximo:</span>
@@ -600,7 +694,7 @@ export default function ClientDashboardPage() {
                             <div className="space-y-1">
                                 <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Descripción</span>
                                 <p className="text-xs text-gray-600 leading-relaxed bg-white border border-gray-100 p-4 rounded-2xl whitespace-pre-wrap">
-                                    {ofertaSeleccionada.description}
+                                    {ofertaSeleccionada.description || "No incluida en el listado"}
                                 </p>
                             </div>
 
