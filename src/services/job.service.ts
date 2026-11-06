@@ -42,6 +42,19 @@ export interface JobFilters {
     size: number;
 }
 
+export interface JobDetail extends Omit<JobResponse, "specificAddress" | "latitude" | "longitude"> {
+    clientName: string;
+    technicianId: string | null;
+    technicianName: string | null;
+    ubigeoDistrictName: string;
+    ubigeoProvinceName: string;
+    ubigeoDepartmentName: string;
+    specificAddress: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    updatedAt: string;
+}
+
 export interface JobPage {
     content: JobSummary[];
     totalElements: number;
@@ -56,6 +69,17 @@ export type JobSummary = Pick<JobResponse, "id" | "title" | "specialty" | "maxBu
 };
 
 export const jobService = {
+    getJobDetail: async (id: string, viewerId: string, signal?: AbortSignal): Promise<JobDetail> => {
+        const { data } = await api.get<JobDetail>(`/api/v1/jobs/${encodeURIComponent(id)}`, {
+            params: { viewerId },
+            signal,
+            headers: { Accept: "application/json" },
+        });
+        return data;
+    },
+    deleteJob: async (id: string): Promise<void> => {
+        await api.delete(`/api/v1/jobs/${encodeURIComponent(id)}`);
+    },
     getJobs: async (params: JobFilters, signal?: AbortSignal): Promise<JobPage> => {
         const response = await api.get<JobPage | JobSummary[]>("/api/v1/jobs", {
             params,

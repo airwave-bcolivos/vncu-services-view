@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Header from "@/components/header/header";
 import { ubigeoService, DistritoDto } from "../../../services/ubigeo.service";
-import { jobService, JobPayload, JobFilters } from "../../../services/job.service";
+import { jobService, JobPayload, JobFilters, JobDetail } from "../../../services/job.service";
 
 export interface Oferta extends JobPayload {
     id: string;
@@ -30,6 +30,7 @@ const FILTROS_INICIALES = {
 
 export default function ClientDashboardPage() {
     const [isLoading, setIsLoading] = useState(false);
+    const [eliminandoId, setEliminandoId] = useState<string | null>(null);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
     const [distritos, setDistritos] = useState<DistritoDto[]>([]);
@@ -59,6 +60,10 @@ export default function ClientDashboardPage() {
     });
 
     const [ofertaSeleccionada, setOfertaSeleccionada] = useState<Oferta | null>(null);
+    const [detalle, setDetalle] = useState<JobDetail | null>(null);
+    const [cargandoDetalle, setCargandoDetalle] = useState(false);
+    const [errorDetalle, setErrorDetalle] = useState<string | null>(null);
+    const [recargaDetalle, setRecargaDetalle] = useState(0);
     const [modoEdicion, setModoEdicion] = useState(false);
 
     useEffect(() => {
@@ -127,6 +132,27 @@ export default function ClientDashboardPage() {
         void cargarSolicitudes();
         return () => controller.abort();
     }, [consulta, recarga]);
+
+    const detalleId = ofertaSeleccionada?.id;
+    useEffect(() => {
+        if (!detalleId || !clientId) return;
+        const controller = new AbortController();
+        const cargarDetalle = async () => {
+            setCargandoDetalle(true);
+            setErrorDetalle(null);
+            setDetalle(null);
+            try {
+                const data = await jobService.getJobDetail(detalleId, clientId, controller.signal);
+                if (!controller.signal.aborted) setDetalle(data);
+            } catch {
+                if (!controller.signal.aborted) setErrorDetalle("No se pudo cargar el detalle del requerimiento.");
+            } finally {
+                if (!controller.signal.aborted) setCargandoDetalle(false);
+            }
+        };
+        void cargarDetalle();
+        return () => controller.abort();
+    }, [detalleId, clientId, recargaDetalle]);
 
     const aplicarFiltros = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
@@ -239,29 +265,34 @@ export default function ClientDashboardPage() {
     };
 
     const handleEliminar = async (id: string) => {
-        if (!confirm("¿Deseas eliminar esta publicación permanentemente?")) return;
+        if (eliminandoId || !confirm("¿Deseas eliminar este requerimiento?")) return;
 
+        setEliminandoId(id);
+        setErrorMessage(null);
+        setSuccessMessage(null);
         try {
-            setOfertas((prev) => prev.filter((o) => o.id !== id));
+            await jobService.deleteJob(id);
             if (ofertaSeleccionada?.id === id) cerrarModal();
+            setConsulta((prev) => ({
+                ...prev,
+                page: ofertas.length === 1 ? Math.max(0, prev.page - 1) : prev.page,
+            }));
+            setRecarga((prev) => prev + 1);
             setSuccessMessage("Publicación eliminada correctamente.");
         } catch (error) {
             console.error(error);
             setErrorMessage("No se pudo eliminar la publicación.");
+        } finally {
+            setEliminandoId(null);
         }
     };
 
     const abrirDetalle = (oferta: Oferta) => {
         setOfertaSeleccionada(oferta);
         setModoEdicion(false);
-        setForm({
-            titulo: oferta.title,
-            descripcion: oferta.description,
-            direccion: oferta.specificAddress,
-            ubigeoDistrictId: oferta.ubigeoDistrictId,
-            presupuestoMaximo: oferta.maxBudget.toString(),
-            oficio: oferta.specialty,
-        });
+        setDetalle(null);
+        setErrorDetalle(null);
+        setCargandoDetalle(true);
     };
 
     const cerrarModal = () => {
@@ -623,12 +654,13 @@ export default function ClientDashboardPage() {
                                                 onClick={() => abrirDetalle(item)}
                                                 className="px-4 py-2 bg-gray-100 hover:bg-blue-600 text-gray-700 hover:text-white text-xs font-bold rounded-xl transition-all duration-300 transform hover:scale-105 active:scale-95 shadow-sm"
                                             >
-                                                Ver / Editar
+                                                Ver
                                             </button>
                                             <button
                                                 type="button"
                                                 onClick={() => handleEliminar(item.id)}
-                                                className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 transform hover:scale-110 text-xs"
+                                                disabled={eliminandoId !== null}
+                                                className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 transform hover:scale-110 text-xs disabled:opacity-50"
                                                 title="Eliminar"
                                             >
                                                 ✕
@@ -662,39 +694,59 @@ export default function ClientDashboardPage() {
                             </button>
                         </div>
 
+                        {cargandoDetalle ? (
+                            <p role="status" className="text-sm text-gray-500">Cargando detalle...</p>
+                        ) : errorDetalle ? (
+                            <div role="alert" className="text-sm text-red-600">
+                                {errorDetalle}
+                                <button type="button" onClick={() => setRecargaDetalle((prev) => prev + 1)} className="ml-3 underline">Reintentar</button>
+                            </div>
+                        ) : detalle && (
                         <div className="space-y-6 transition-all duration-300">
                             <div>
                                 <span className="px-3 py-1 rounded-full bg-blue-50 text-blue-600 text-xs font-semibold">
-                                    {ofertaSeleccionada.specialty}
+                                    {detalle.specialty}
                                 </span>
                                 <h4 className="text-xl font-bold text-gray-900 mt-2">
-                                    {ofertaSeleccionada.title}
+                                    {detalle.title}
                                 </h4>
                             </div>
 
                             <div className="bg-gray-50/80 p-4 rounded-2xl space-y-2 text-xs border border-gray-100">
                                 <div className="flex justify-between">
                                     <span className="text-gray-400">Estado:</span>
-                                    <span className="font-bold text-emerald-600">{ofertaSeleccionada.estado}</span>
+                                    <span className="font-bold text-emerald-600">{({ OPEN: "Publicada", IN_PROGRESS: "En progreso", COMPLETED: "Completada", CANCELED: "Cancelada" }[detalle.status] ?? detalle.status)}</span>
+                                </div>
+                                <div className="flex justify-between gap-4">
+                                    <span className="text-gray-400">Cliente:</span>
+                                    <span className="font-semibold text-gray-800 text-right">{detalle.clientName}</span>
+                                </div>
+                                <div className="flex justify-between gap-4">
+                                    <span className="text-gray-400">Profesional asignado:</span>
+                                    <span className="font-semibold text-gray-800 text-right">{detalle.technicianName || "Sin asignar"}</span>
+                                </div>
+                                <div className="flex justify-between gap-4">
+                                    <span className="text-gray-400">Ubicación:</span>
+                                    <span className="font-semibold text-gray-800 text-right">{[detalle.ubigeoDistrictName, detalle.ubigeoProvinceName, detalle.ubigeoDepartmentName].filter(Boolean).join(", ") || "No disponible"}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-400">Dirección:</span>
-                                    <span className="font-semibold text-gray-800">{ofertaSeleccionada.specificAddress || "No incluida en el listado"}</span>
+                                    <span className="font-semibold text-gray-800">{detalle.specificAddress || "No disponible"}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-400">Presupuesto Máximo:</span>
-                                    <span className="font-bold text-blue-600">{formatearSoles(ofertaSeleccionada.maxBudget)}</span>
+                                    <span className="font-bold text-blue-600">{formatearSoles(detalle.maxBudget)}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span className="text-gray-400">Fecha de Creación:</span>
-                                    <span className="font-semibold text-gray-800">{ofertaSeleccionada.fechaCreacion}</span>
+                                    <span className="font-semibold text-gray-800">{new Date(detalle.createdAt).toLocaleString("es-PE")}</span>
                                 </div>
                             </div>
 
                             <div className="space-y-1">
                                 <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Descripción</span>
                                 <p className="text-xs text-gray-600 leading-relaxed bg-white border border-gray-100 p-4 rounded-2xl whitespace-pre-wrap">
-                                    {ofertaSeleccionada.description || "No incluida en el listado"}
+                                    {detalle.description || "No disponible"}
                                 </p>
                             </div>
 
@@ -702,12 +754,14 @@ export default function ClientDashboardPage() {
                                 <button
                                     type="button"
                                     onClick={() => handleEliminar(ofertaSeleccionada.id)}
-                                    className="w-full py-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-2xl text-xs transition-all duration-300"
+                                    disabled={eliminandoId !== null}
+                                    className="w-full py-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-2xl text-xs transition-all duration-300 disabled:opacity-50"
                                 >
-                                    Eliminar Requerimiento
+                                    {eliminandoId === ofertaSeleccionada.id ? "Eliminando..." : "Eliminar Requerimiento"}
                                 </button>
                             </div>
                         </div>
+                        )}
                     </div>
                 </div>
             )}

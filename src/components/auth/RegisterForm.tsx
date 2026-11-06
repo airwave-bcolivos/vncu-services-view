@@ -10,6 +10,10 @@ interface RegisterFormProps {
   role: "CLIENT" | "TECHNICIAN";
 }
 
+type RegisterFormData = RegisterClientPayload & RegisterTechnicianPayload & {
+  confirmPassword: string;
+};
+
 export default function RegisterForm({ role }: RegisterFormProps) {
   const router = useRouter(); // Inicializamos el enrutador
   const [isLoading, setIsLoading] = useState(false);
@@ -21,14 +25,15 @@ export default function RegisterForm({ role }: RegisterFormProps) {
     watch, 
     reset,
     formState: { errors } 
-  } = useForm<any>({
-    mode: "onChange"
+  } = useForm<RegisterFormData>({
+    mode: "onChange",
+    defaultValues: { address: "" },
   });
 
   const selectedDocumentType = watch("documentTypeCode");
   const passwordValue = watch("password");
 
-  const onSubmit = async (data: any) => {
+  const onSubmit = async (data: RegisterFormData) => {
     setIsLoading(true);
     setMessage(null);
 
@@ -36,7 +41,17 @@ export default function RegisterForm({ role }: RegisterFormProps) {
 
     try {
       if (role === "CLIENT") {
-        const payload: RegisterClientPayload = { ...backendData };
+        const payload: RegisterClientPayload = {
+          email: data.email.trim(),
+          password: data.password,
+          names: data.names.trim(),
+          lastname: data.lastname.trim(),
+          secondLastname: data.secondLastname?.trim(),
+          documentTypeCode: data.documentTypeCode,
+          documentId: data.documentId.trim(),
+          phoneNumber: data.phoneNumber?.trim(),
+          address: data.address?.trim() ?? "",
+        };
         await authService.registerClient(payload);
       } else {
         const payload: RegisterTechnicianPayload = { ...backendData };
@@ -92,16 +107,15 @@ export default function RegisterForm({ role }: RegisterFormProps) {
           />
           {errors.lastname && <p className="text-red-500 text-xs mt-1">{errors.lastname.message as string}</p>}
         </div>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Apellido Materno *</label>
-        <input 
-          {...register("secondLastname", { required: "El apellido materno es obligatorio" })} 
-          type="text" 
-          className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.secondLastname ? 'border-red-500' : 'border-gray-300'}`} 
-        />
-        {errors.secondLastname && <p className="text-red-500 text-xs mt-1">{errors.secondLastname.message as string}</p>}
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Apellido Materno *</label>
+          <input
+            {...register("secondLastname", { required: "El apellido materno es obligatorio" })}
+            type="text"
+            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.secondLastname ? 'border-red-500' : 'border-gray-300'}`}
+          />
+          {errors.secondLastname && <p className="text-red-500 text-xs mt-1">{errors.secondLastname.message as string}</p>}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -138,6 +152,7 @@ export default function RegisterForm({ role }: RegisterFormProps) {
 
       {/* 2. CAMPOS EXCLUSIVOS DE CLIENTE */}
       {role === "CLIENT" && (
+        <>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Teléfono Móvil *</label>
           <input 
@@ -153,6 +168,23 @@ export default function RegisterForm({ role }: RegisterFormProps) {
           />
           {errors.phoneNumber && <p className="text-red-500 text-xs mt-1">{errors.phoneNumber.message as string}</p>}
         </div>
+        <div>
+          <label htmlFor="client-address" className="block text-sm font-medium text-gray-700 mb-1">Dirección</label>
+          <input
+            {...register("address", {
+              maxLength: { value: 255, message: "La dirección no puede superar los 255 caracteres" },
+              setValueAs: (value: string) => value.trim(),
+            })}
+            id="client-address"
+            type="text"
+            autoComplete="street-address"
+            maxLength={255}
+            placeholder="Ej: Av. Lima 123"
+            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.address ? 'border-red-500' : 'border-gray-300'}`}
+          />
+          {errors.address && <p className="text-red-500 text-xs mt-1">{errors.address.message as string}</p>}
+        </div>
+        </>
       )}
 
       {/* 3. CAMPOS EXCLUSIVOS DE TÉCNICO */}
