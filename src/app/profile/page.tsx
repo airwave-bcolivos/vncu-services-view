@@ -5,11 +5,6 @@ import { useForm } from "react-hook-form";
 import Header from "@/components/header/header";
 import { userService, UserProfile } from "../../services/user.service";
 
-const DISTRITOS_PERU = [
-    "Lima", "Ate", "San Borja", "San Isidro", "Miraflores",
-    "Surco", "La Molina", "San Miguel", "Magdalena", "Jesús María", "Lince"
-];
-
 export default function ProfilePage() {
     const [isEditing, setIsEditing] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
@@ -48,15 +43,17 @@ export default function ProfilePage() {
     };
 
     const onSubmit = async (data: UserProfile) => {
+        if (isSaving) return;
         setIsSaving(true);
         setErrorMessage(null);
         setSuccessMessage(null);
 
         try {
-            await userService.updateProfile(data);
+            const updatedProfile = await userService.updateProfile(data);
+            reset(updatedProfile);
             setSuccessMessage("¡Tus datos personales se han actualizado correctamente!");
             setIsEditing(false);
-        } catch (error: any) {
+        } catch (error) {
             console.error(error);
             setErrorMessage("Ocurrió un error al actualizar tus datos. Inténtalo de nuevo.");
         } finally {
@@ -110,10 +107,10 @@ export default function ProfilePage() {
                             </p>
                         </div>
 
-                        {!isEditing && !isLoading && (
+                        {!isEditing && !isLoading && perfilData.id && (
                             <button
                                 type="button"
-                                onClick={() => setIsEditing(true)}
+                                onClick={() => { setSuccessMessage(null); setErrorMessage(null); setIsEditing(true); }}
                                 className="px-4 py-2 bg-blue-50 text-blue-600 font-semibold text-xs rounded-xl hover:bg-blue-100 transition-colors"
                             >
                                 ✏️ Editar Perfil
@@ -137,21 +134,27 @@ export default function ProfilePage() {
                         <div className="py-12 text-center text-gray-500 font-medium text-sm">
                             Cargando tu información...
                         </div>
+                    ) : !perfilData.id ? (
+                        <div className="text-center">
+                            <button type="button" onClick={cargarPerfil} className="px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-sm font-semibold">
+                                Reintentar
+                            </button>
+                        </div>
                     ) : !isEditing ? (
                         /* ESCENARIO 2: VISTA DE DATOS PERSONALES */
                         <div className="space-y-6">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Nombre</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Nombres</label>
                                     <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
                                         {perfilData.nombre || "No especificado"}
                                     </p>
                                 </div>
 
                                 <div>
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Apellido</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Apellidos</label>
                                     <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
-                                        {perfilData.apellido || "No especificado"}
+                                        {[perfilData.apellido, perfilData.apellidoMaterno].filter(Boolean).join(" ") || "No especificado"}
                                     </p>
                                 </div>
                             </div>
@@ -172,9 +175,9 @@ export default function ProfilePage() {
                                 </div>
 
                                 <div>
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Distrito</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Dirección</label>
                                     <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
-                                        {perfilData.distrito || "No especificado"}
+                                        {perfilData.direccion || "No especificada"}
                                     </p>
                                 </div>
                             </div>
@@ -184,10 +187,11 @@ export default function ProfilePage() {
                         <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Nombre *</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Nombres *</label>
                                     <input
                                         {...register("nombre", { required: "El nombre es obligatorio" })}
                                         type="text"
+                                        maxLength={150}
                                         className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
                                             errors.nombre ? "border-red-500" : "border-gray-200"
                                         }`}
@@ -196,16 +200,22 @@ export default function ProfilePage() {
                                 </div>
 
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Apellido *</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Apellido paterno *</label>
                                     <input
                                         {...register("apellido", { required: "El apellido es obligatorio" })}
                                         type="text"
+                                        maxLength={100}
                                         className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
                                             errors.apellido ? "border-red-500" : "border-gray-200"
                                         }`}
                                     />
                                     {errors.apellido && <p className="text-red-500 text-xs mt-1">{errors.apellido.message}</p>}
                                 </div>
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Apellido materno</label>
+                                <input {...register("apellidoMaterno")} type="text" maxLength={100} className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm outline-none focus:border-blue-600" />
                             </div>
 
                             <div className="space-y-1">
@@ -219,6 +229,7 @@ export default function ProfilePage() {
                                         },
                                     })}
                                     type="email"
+                                    maxLength={255}
                                     className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
                                         errors.email ? "border-red-500" : "border-gray-200"
                                     }`}
@@ -230,24 +241,34 @@ export default function ProfilePage() {
                                 <div className="space-y-1">
                                     <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Teléfono</label>
                                     <input
-                                        {...register("telefono")}
+                                        {...register("telefono", { pattern: { value: /^\+?[0-9]{7,15}$/, message: "Ingresa de 7 a 15 dígitos, con + opcional al inicio." } })}
                                         type="tel"
                                         className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none"
                                     />
+                                    {errors.telefono && <p className="text-red-500 text-xs">{errors.telefono.message}</p>}
                                 </div>
 
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Distrito</label>
-                                    <select
-                                        {...register("distrito")}
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Dirección</label>
+                                    <input
+                                        type="text"
+                                        {...register("direccion")}
+                                        maxLength={255}
                                         className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none"
-                                    >
-                                        {DISTRITOS_PERU.map((dist) => (
-                                            <option key={dist} value={dist}>
-                                                {dist}
-                                            </option>
-                                        ))}
-                                    </select>
+                                    />
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Tipo de documento *</label>
+                                    <input {...register("codigoTipoDocumento", { required: "Ingresa el tipo de documento", setValueAs: (value: string) => value.trim().toUpperCase() })} type="text" placeholder="DNI" className="w-full px-4 py-3 border border-gray-200 rounded-2xl text-sm" />
+                                    {errors.codigoTipoDocumento && <p className="text-red-500 text-xs">{errors.codigoTipoDocumento.message}</p>}
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Número de documento *</label>
+                                    <input {...register("numeroDocumento", { required: "Ingresa el número de documento", pattern: { value: /^[A-Za-z0-9]{8,12}$/, message: "Ingresa entre 8 y 12 caracteres alfanuméricos." } })} maxLength={12} type="text" className="w-full px-4 py-3 border border-gray-200 rounded-2xl text-sm" />
+                                    {errors.numeroDocumento && <p className="text-red-500 text-xs">{errors.numeroDocumento.message}</p>}
                                 </div>
                             </div>
 
@@ -269,6 +290,22 @@ export default function ProfilePage() {
                                 </button>
                             </div>
                         </form>
+                    )}
+                    {!isLoading && !isEditing && perfilData.id && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-gray-100 pt-6">
+                            <div>
+                                <span className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Tipo de documento</span>
+                                <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                    {perfilData.tipoDocumento || perfilData.codigoTipoDocumento || "No especificado"}
+                                </p>
+                            </div>
+                            <div>
+                                <span className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Número de documento</span>
+                                <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                    {perfilData.numeroDocumento || "No especificado"}
+                                </p>
+                            </div>
+                        </div>
                     )}
                 </div>
             </section>

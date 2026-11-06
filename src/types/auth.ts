@@ -12,6 +12,7 @@ export interface BaseRegisterPayload {
 // Payload específico para Cliente
 export interface RegisterClientPayload extends BaseRegisterPayload {
   phoneNumber?: string;
+  address?: string;
 }
 
 // Payload específico para Técnico
