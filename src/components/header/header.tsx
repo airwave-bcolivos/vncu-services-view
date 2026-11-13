@@ -157,6 +157,12 @@ export default function Header() {
                                                     description="Tus datos personales"
                                                     onClick={closeMenu}
                                                 />
+                                                <MenuLink
+                                                    href="/support"
+                                                    title="Quejas y Reclamos"
+                                                    description="Contacta al equipo de soporte"
+                                                    onClick={closeMenu}
+                                                />
                                             </>
                                         )}
 
@@ -172,6 +178,12 @@ export default function Header() {
                                                     href="/dashboard/technician/profile"
                                                     title="Mi perfil"
                                                     description="Tus datos personales"
+                                                    onClick={closeMenu}
+                                                />
+                                                <MenuLink
+                                                    href="/support"
+                                                    title="Quejas y Reclamos"
+                                                    description="Contacta al equipo de soporte"
                                                     onClick={closeMenu}
                                                 />
                                             </>
