@@ -1,24 +1,41 @@
 
+import axios from "axios";
+
 export interface ComplaintPayload {
-    titulo: string;
-    descripcion: string;
+    userId: string;
+    title: string;
+    description: string;
 }
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 export const complaintService = {
     createComplaint: async (data: ComplaintPayload): Promise<void> => {
-        const token = localStorage.getItem("vncu_token");
+        try {
+            await axios.post(
+                `${API_URL}/api/v1/complaints`,
+                {
+                    userId: data.userId,
+                    title: data.title,
+                    description: data.description,
+                },
+                {
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                }
+            );
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                const message =
+                    error.response?.data?.message ||
+                    error.response?.data?.error ||
+                    "No se pudo registrar el reclamo. Inténtalo nuevamente.";
 
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/complaints`, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify(data),
-        });
+                throw new Error(message);
+            }
 
-        if (!response.ok) {
-            throw new Error("No se pudo registrar el reclamo.");
+            throw new Error("Ocurrió un error inesperado al registrar el reclamo.");
         }
     },
 };

@@ -1,3 +1,4 @@
+
 import { api } from "@/lib/axios";
 
 export interface JobPayload {
@@ -77,20 +78,62 @@ export const jobService = {
         });
         return data;
     },
+
     deleteJob: async (id: string): Promise<void> => {
         await api.delete(`/api/v1/jobs/${encodeURIComponent(id)}`);
     },
+
     getJobs: async (params: JobFilters, signal?: AbortSignal): Promise<JobPage> => {
         const response = await api.get<JobPage | JobSummary[]>("/api/v1/jobs", {
             params,
             signal,
             headers: { Accept: "application/json" },
         });
+
         if (Array.isArray(response.data)) {
-            return { content: response.data, totalElements: response.data.length, totalPages: 1 };
+            return {
+                content: response.data,
+                totalElements: response.data.length,
+                totalPages: 1,
+            };
         }
+
         return response.data;
     },
+
+
+    getOpenJobs: async (
+        params?: {
+            specialty?: string;
+            districtId?: string;
+            page?: number;
+            size?: number;
+        },
+        signal?: AbortSignal
+    ): Promise<JobPage> => {
+        const response = await api.get<JobPage | JobSummary[]>(
+            "/api/v1/jobs/open",
+            {
+                params,
+                signal,
+                headers: {
+                    Accept: "application/json",
+                },
+            }
+        );
+
+        if (Array.isArray(response.data)) {
+            return {
+                content: response.data,
+                totalElements: response.data.length,
+                totalPages: 1,
+            };
+        }
+
+        return response.data;
+    },
+
+
     createJob: async (payload: JobPayload): Promise<JobResponse> => {
         const response = await api.post("/api/v1/jobs", payload);
         return response.data;

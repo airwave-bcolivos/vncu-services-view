@@ -4,7 +4,12 @@
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import Header from "@/components/header/header";
-import { complaintService, ComplaintPayload } from "../../services/complaint.service";
+import { complaintService } from "../../services/complaint.service";
+
+interface ComplaintForm {
+    title: string;
+    description: string;
+}
 
 export default function ComplaintsPage() {
     const [isSaving, setIsSaving] = useState(false);
@@ -17,13 +22,17 @@ export default function ComplaintsPage() {
         reset,
         watch,
         formState: { errors },
-    } = useForm<ComplaintPayload>({
+    } = useForm<ComplaintForm>({
         mode: "onChange",
+        defaultValues: {
+            title: "",
+            description: "",
+        },
     });
 
-    const descripcion = watch("descripcion", "");
+    const description = watch("description", "");
 
-    const onSubmit = async (data: ComplaintPayload) => {
+    const onSubmit = async (data: ComplaintForm) => {
         if (isSaving) return;
 
         setIsSaving(true);
@@ -31,20 +40,41 @@ export default function ComplaintsPage() {
         setSuccessMessage(null);
 
         try {
-            await complaintService.createComplaint(data);
+            const userId = localStorage.getItem("vncu_user_id")?.trim();
 
-            setSuccessMessage("¡Tu reclamo ha sido enviado correctamente! Nuestro equipo de soporte lo revisará.");
+            if (!userId) {
+                throw new Error(
+                    "No se pudo identificar al usuario. Inicia sesión nuevamente."
+                );
+            }
+
+            await complaintService.createComplaint({
+                userId,
+                title: data.title.trim(),
+                description: data.description.trim(),
+            });
+
+            setSuccessMessage(
+                "¡Tu reclamo ha sido enviado correctamente! Nuestro equipo de soporte lo revisará."
+            );
+
             reset();
+
         } catch (error) {
-            console.error(error);
-            setErrorMessage("Ocurrió un error al enviar tu reclamo. Inténtalo nuevamente.");
+            console.error("Error al registrar el reclamo:", error);
+
+            setErrorMessage(
+                error instanceof Error
+                    ? error.message
+                    : "Ocurrió un error al enviar tu reclamo. Inténtalo nuevamente."
+            );
         } finally {
             setIsSaving(false);
         }
     };
 
     return (
-        <main className="min-h-screen flex flex-col bg-[#F8FAFC] font-sans text-gray-900 selection:bg-blue-100 selection:text-blue-600">
+        <main className="min-h-screen flex flex-col bg-[#F8FAFC] font-sans text-gray-900 dark:bg-gray-950 dark:text-gray-100 selection:bg-blue-100 selection:text-blue-600 dark:selection:bg-blue-900 dark:selection:text-blue-100">
             <Header />
 
             {/* BANNER SUPERIOR */}
@@ -63,8 +93,9 @@ export default function ComplaintsPage() {
                         </h1>
 
                         <p className="text-blue-100 text-sm leading-relaxed">
-                            Cuéntanos qué inconveniente has experimentado. Nuestro equipo de soporte
-                            revisará tu solicitud para brindarte una solución.
+                            Cuéntanos qué inconveniente has experimentado.
+                            Nuestro equipo de soporte revisará tu solicitud
+                            para brindarte una solución.
                         </p>
                     </div>
 
@@ -81,26 +112,27 @@ export default function ComplaintsPage() {
 
             {/* FORMULARIO */}
             <section className="flex-1 max-w-2xl w-full mx-auto px-4 py-8 md:py-10">
-                <div className="bg-white rounded-3xl border border-gray-200/70 shadow-sm p-6 md:p-8 space-y-6">
+                <div className="bg-white rounded-3xl border border-gray-200/70 shadow-sm p-6 md:p-8 space-y-6 dark:bg-gray-900 dark:border-gray-700 dark:shadow-black/20">
 
-                    <div className="border-b border-gray-100 pb-4">
-                        <h2 className="text-xl font-bold text-gray-900">
+                    <div className="border-b border-gray-100 pb-4 dark:border-gray-700">
+                        <h2 className="text-xl font-bold text-gray-900 dark:text-white">
                             Enviar un reclamo
                         </h2>
-                        <p className="text-xs text-gray-400 mt-1">
+
+                        <p className="text-xs text-gray-400 mt-1 dark:text-gray-400">
                             Completa los siguientes campos para registrar tu solicitud.
                         </p>
                     </div>
 
                     {/* MENSAJES */}
                     {errorMessage && (
-                        <div className="p-3 rounded-2xl text-xs font-semibold bg-red-50 text-red-600 border border-red-100 text-center">
+                        <div className="p-3 rounded-2xl text-xs font-semibold bg-red-50 text-red-600 border border-red-100 text-center dark:bg-red-950/40 dark:text-red-300 dark:border-red-900">
                             {errorMessage}
                         </div>
                     )}
 
                     {successMessage && (
-                        <div className="p-4 rounded-2xl text-xs font-semibold bg-emerald-50 text-emerald-600 border border-emerald-100 text-center">
+                        <div className="p-4 rounded-2xl text-xs font-semibold bg-emerald-50 text-emerald-600 border border-emerald-100 text-center dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900">
                             {successMessage}
                         </div>
                     )}
@@ -109,12 +141,12 @@ export default function ComplaintsPage() {
 
                         {/* TÍTULO */}
                         <div className="space-y-1">
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                                 Título del reclamo *
                             </label>
 
                             <input
-                                {...register("titulo", {
+                                {...register("title", {
                                     required: "El título del reclamo es obligatorio.",
                                     minLength: {
                                         value: 5,
@@ -124,30 +156,35 @@ export default function ComplaintsPage() {
                                         value: 150,
                                         message: "El título no puede superar los 150 caracteres.",
                                     },
+                                    validate: (value) =>
+                                        value.trim().length >= 5 ||
+                                        "El título debe tener al menos 5 caracteres.",
                                 })}
                                 type="text"
                                 maxLength={150}
                                 placeholder="Ej. Problema con el servicio recibido"
-                                className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
-                                    errors.titulo ? "border-red-500" : "border-gray-200"
+                                className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm text-gray-900 placeholder:text-gray-400 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:bg-gray-800 focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
+                                    errors.title
+                                        ? "border-red-500 dark:border-red-500"
+                                        : "border-gray-200 dark:border-gray-700"
                                 }`}
                             />
 
-                            {errors.titulo && (
+                            {errors.title && (
                                 <p className="text-red-500 text-xs mt-1">
-                                    {errors.titulo.message}
+                                    {errors.title.message}
                                 </p>
                             )}
                         </div>
 
                         {/* DESCRIPCIÓN */}
                         <div className="space-y-1">
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
+                            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                                 Descripción del reclamo *
                             </label>
 
                             <textarea
-                                {...register("descripcion", {
+                                {...register("description", {
                                     required: "La descripción del reclamo es obligatoria.",
                                     minLength: {
                                         value: 10,
@@ -157,30 +194,39 @@ export default function ComplaintsPage() {
                                         value: 300,
                                         message: "La descripción no puede superar los 300 caracteres.",
                                     },
+                                    validate: (value) =>
+                                        value.trim().length >= 10 ||
+                                        "Describe tu problema con al menos 10 caracteres.",
                                 })}
                                 rows={5}
                                 maxLength={300}
                                 placeholder="Describe detalladamente el inconveniente que has experimentado..."
-                                className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none resize-none ${
-                                    errors.descripcion ? "border-red-500" : "border-gray-200"
+                                className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm text-gray-900 placeholder:text-gray-400 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:bg-gray-800 focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none resize-none ${
+                                    errors.description
+                                        ? "border-red-500 dark:border-red-500"
+                                        : "border-gray-200 dark:border-gray-700"
                                 }`}
                             />
 
                             <div className="flex justify-between items-center">
-                                {errors.descripcion ? (
+                                {errors.description ? (
                                     <p className="text-red-500 text-xs">
-                                        {errors.descripcion.message}
+                                        {errors.description.message}
                                     </p>
                                 ) : (
-                                    <p className="text-gray-400 text-xs">
+                                    <p className="text-gray-400 text-xs dark:text-gray-500">
                                         Máximo 300 caracteres.
                                     </p>
                                 )}
 
-                                <span className={`text-xs font-semibold ${
-                                    descripcion.length >= 300 ? "text-red-500" : "text-gray-400"
-                                }`}>
-                                    {descripcion.length}/300
+                                <span
+                                    className={`text-xs font-semibold ${
+                                        description.length >= 300
+                                            ? "text-red-500"
+                                            : "text-gray-400 dark:text-gray-500"
+                                    }`}
+                                >
+                                    {description.length}/300
                                 </span>
                             </div>
                         </div>
@@ -192,10 +238,12 @@ export default function ComplaintsPage() {
                                 disabled={isSaving}
                                 className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 px-4 rounded-2xl transition-all shadow-md shadow-blue-600/20 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                             >
-                                {isSaving ? "Enviando reclamo..." : "Enviar Reclamo"}
+                                {isSaving
+                                    ? "Enviando reclamo..."
+                                    : "Enviar Reclamo"}
                             </button>
 
-                            <p className="text-center text-[11px] text-gray-400 mt-4">
+                            <p className="text-center text-[11px] text-gray-400 mt-4 dark:text-gray-500">
                                 Tu solicitud será enviada al equipo de administración de Vincu.
                             </p>
                         </div>

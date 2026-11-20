@@ -1,5 +1,6 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
 :root {
   /* Forzamos colores claros para el MVP, evitando problemas con el Modo Oscuro */
   --background: #f3f4f6; /* Fondo gris muy claro, estilo app móvil */

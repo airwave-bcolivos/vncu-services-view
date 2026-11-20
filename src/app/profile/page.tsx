@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useEffect } from "react";
@@ -68,7 +69,7 @@ export default function ProfilePage() {
     };
 
     return (
-        <main className="min-h-screen flex flex-col bg-[#F8FAFC] font-sans text-gray-900 selection:bg-blue-100 selection:text-blue-600">
+        <main className="min-h-screen flex flex-col bg-[#F8FAFC] font-sans text-gray-900 dark:bg-gray-950 dark:text-gray-100 selection:bg-blue-100 selection:text-blue-600 dark:selection:bg-blue-900 dark:selection:text-blue-100">
             <Header />
 
             {/* BANNER SUPERIOR DE COLOR AZUL VINCU */}
@@ -98,11 +99,12 @@ export default function ProfilePage() {
             </div>
 
             <section className="flex-1 max-w-2xl w-full mx-auto px-4 py-8 md:py-10 space-y-6">
-                <div className="bg-white rounded-3xl border border-gray-200/70 shadow-sm p-6 md:p-8 space-y-6 transition-all duration-300">
-                    <div className="flex justify-between items-center border-b border-gray-100 pb-4">
+                <div className="bg-white rounded-3xl border border-gray-200/70 shadow-sm p-6 md:p-8 space-y-6 transition-all duration-300 dark:bg-gray-900 dark:border-gray-700 dark:shadow-black/20">
+
+                    <div className="flex justify-between items-center border-b border-gray-100 pb-4 dark:border-gray-700">
                         <div>
-                            <h2 className="text-xl font-bold text-gray-900">Mis Datos Personales</h2>
-                            <p className="text-xs text-gray-400 mt-1">
+                            <h2 className="text-xl font-bold text-gray-900 dark:text-white">Mis Datos Personales</h2>
+                            <p className="text-xs text-gray-400 mt-1 dark:text-gray-400">
                                 Consulta y gestiona tu información personal.
                             </p>
                         </div>
@@ -111,7 +113,7 @@ export default function ProfilePage() {
                             <button
                                 type="button"
                                 onClick={() => { setSuccessMessage(null); setErrorMessage(null); setIsEditing(true); }}
-                                className="px-4 py-2 bg-blue-50 text-blue-600 font-semibold text-xs rounded-xl hover:bg-blue-100 transition-colors"
+                                className="px-4 py-2 bg-blue-50 text-blue-600 font-semibold text-xs rounded-xl hover:bg-blue-100 transition-colors dark:bg-blue-950/50 dark:text-blue-300 dark:hover:bg-blue-900/60"
                             >
                                 ✏️ Editar Perfil
                             </button>
@@ -119,24 +121,28 @@ export default function ProfilePage() {
                     </div>
 
                     {errorMessage && (
-                        <div className="p-3 rounded-2xl text-xs font-semibold bg-red-50 text-red-600 border border-red-100 text-center">
+                        <div className="p-3 rounded-2xl text-xs font-semibold bg-red-50 text-red-600 border border-red-100 text-center dark:bg-red-950/40 dark:text-red-300 dark:border-red-900">
                             {errorMessage}
                         </div>
                     )}
 
                     {successMessage && (
-                        <div className="p-3 rounded-2xl text-xs font-semibold bg-emerald-50 text-emerald-600 border border-emerald-100 text-center">
+                        <div className="p-3 rounded-2xl text-xs font-semibold bg-emerald-50 text-emerald-600 border border-emerald-100 text-center dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-900">
                             {successMessage}
                         </div>
                     )}
 
                     {isLoading ? (
-                        <div className="py-12 text-center text-gray-500 font-medium text-sm">
+                        <div className="py-12 text-center text-gray-500 font-medium text-sm dark:text-gray-400">
                             Cargando tu información...
                         </div>
                     ) : !perfilData.id ? (
                         <div className="text-center">
-                            <button type="button" onClick={cargarPerfil} className="px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-sm font-semibold">
+                            <button
+                                type="button"
+                                onClick={cargarPerfil}
+                                className="px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-sm font-semibold dark:bg-blue-950/50 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/60"
+                            >
                                 Reintentar
                             </button>
                         </div>
@@ -145,38 +151,38 @@ export default function ProfilePage() {
                         <div className="space-y-6">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Nombres</label>
-                                    <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Nombres</label>
+                                    <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80 dark:text-gray-100 dark:bg-gray-800 dark:border-gray-700">
                                         {perfilData.nombre || "No especificado"}
                                     </p>
                                 </div>
 
                                 <div>
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Apellidos</label>
-                                    <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Apellidos</label>
+                                    <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80 dark:text-gray-100 dark:bg-gray-800 dark:border-gray-700">
                                         {[perfilData.apellido, perfilData.apellidoMaterno].filter(Boolean).join(" ") || "No especificado"}
                                     </p>
                                 </div>
                             </div>
 
                             <div>
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Correo Electrónico</label>
-                                <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Correo Electrónico</label>
+                                <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80 dark:text-gray-100 dark:bg-gray-800 dark:border-gray-700">
                                     {perfilData.email}
                                 </p>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div>
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Teléfono</label>
-                                    <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Teléfono</label>
+                                    <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80 dark:text-gray-100 dark:bg-gray-800 dark:border-gray-700">
                                         {perfilData.telefono || "No especificado"}
                                     </p>
                                 </div>
 
                                 <div>
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Dirección</label>
-                                    <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Dirección</label>
+                                    <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80 dark:text-gray-100 dark:bg-gray-800 dark:border-gray-700">
                                         {perfilData.direccion || "No especificada"}
                                     </p>
                                 </div>
@@ -187,26 +193,26 @@ export default function ProfilePage() {
                         <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Nombres *</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Nombres *</label>
                                     <input
                                         {...register("nombre", { required: "El nombre es obligatorio" })}
                                         type="text"
                                         maxLength={150}
-                                        className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
-                                            errors.nombre ? "border-red-500" : "border-gray-200"
+                                        className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm text-gray-900 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:bg-gray-800 focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
+                                            errors.nombre ? "border-red-500 dark:border-red-500" : "border-gray-200 dark:border-gray-700"
                                         }`}
                                     />
                                     {errors.nombre && <p className="text-red-500 text-xs mt-1">{errors.nombre.message}</p>}
                                 </div>
 
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Apellido paterno *</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Apellido paterno *</label>
                                     <input
                                         {...register("apellido", { required: "El apellido es obligatorio" })}
                                         type="text"
                                         maxLength={100}
-                                        className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
-                                            errors.apellido ? "border-red-500" : "border-gray-200"
+                                        className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm text-gray-900 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:bg-gray-800 focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
+                                            errors.apellido ? "border-red-500 dark:border-red-500" : "border-gray-200 dark:border-gray-700"
                                         }`}
                                     />
                                     {errors.apellido && <p className="text-red-500 text-xs mt-1">{errors.apellido.message}</p>}
@@ -214,12 +220,17 @@ export default function ProfilePage() {
                             </div>
 
                             <div className="space-y-1">
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Apellido materno</label>
-                                <input {...register("apellidoMaterno")} type="text" maxLength={100} className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm outline-none focus:border-blue-600" />
+                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Apellido materno</label>
+                                <input
+                                    {...register("apellidoMaterno")}
+                                    type="text"
+                                    maxLength={100}
+                                    className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm text-gray-900 outline-none focus:bg-white focus:border-blue-600 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:focus:bg-gray-800"
+                                />
                             </div>
 
                             <div className="space-y-1">
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Correo Electrónico *</label>
+                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Correo Electrónico *</label>
                                 <input
                                     {...register("email", {
                                         required: "El correo es obligatorio",
@@ -230,8 +241,8 @@ export default function ProfilePage() {
                                     })}
                                     type="email"
                                     maxLength={255}
-                                    className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
-                                        errors.email ? "border-red-500" : "border-gray-200"
+                                    className={`w-full px-4 py-3 bg-gray-50/50 border rounded-2xl text-sm text-gray-900 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:bg-gray-800 focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none ${
+                                        errors.email ? "border-red-500 dark:border-red-500" : "border-gray-200 dark:border-gray-700"
                                     }`}
                                 />
                                 {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email.message}</p>}
@@ -239,35 +250,46 @@ export default function ProfilePage() {
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Teléfono</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Teléfono</label>
                                     <input
                                         {...register("telefono", { pattern: { value: /^\+?[0-9]{7,15}$/, message: "Ingresa de 7 a 15 dígitos, con + opcional al inicio." } })}
                                         type="tel"
-                                        className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none"
+                                        className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm text-gray-900 focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:focus:bg-gray-800"
                                     />
                                     {errors.telefono && <p className="text-red-500 text-xs">{errors.telefono.message}</p>}
                                 </div>
 
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Dirección</label>
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Dirección</label>
                                     <input
                                         type="text"
                                         {...register("direccion")}
                                         maxLength={255}
-                                        className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none"
+                                        className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm text-gray-900 focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all outline-none dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:focus:bg-gray-800"
                                     />
                                 </div>
                             </div>
 
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Tipo de documento *</label>
-                                    <input {...register("codigoTipoDocumento", { required: "Ingresa el tipo de documento", setValueAs: (value: string) => value.trim().toUpperCase() })} type="text" placeholder="DNI" className="w-full px-4 py-3 border border-gray-200 rounded-2xl text-sm" />
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Tipo de documento *</label>
+                                    <input
+                                        {...register("codigoTipoDocumento", { required: "Ingresa el tipo de documento", setValueAs: (value: string) => value.trim().toUpperCase() })}
+                                        type="text"
+                                        placeholder="DNI"
+                                        className="w-full px-4 py-3 border border-gray-200 rounded-2xl text-sm text-gray-900 bg-gray-50/50 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500"
+                                    />
                                     {errors.codigoTipoDocumento && <p className="text-red-500 text-xs">{errors.codigoTipoDocumento.message}</p>}
                                 </div>
+
                                 <div className="space-y-1">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">Número de documento *</label>
-                                    <input {...register("numeroDocumento", { required: "Ingresa el número de documento", pattern: { value: /^[A-Za-z0-9]{8,12}$/, message: "Ingresa entre 8 y 12 caracteres alfanuméricos." } })} maxLength={12} type="text" className="w-full px-4 py-3 border border-gray-200 rounded-2xl text-sm" />
+                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">Número de documento *</label>
+                                    <input
+                                        {...register("numeroDocumento", { required: "Ingresa el número de documento", pattern: { value: /^[A-Za-z0-9]{8,12}$/, message: "Ingresa entre 8 y 12 caracteres alfanuméricos." } })}
+                                        maxLength={12}
+                                        type="text"
+                                        className="w-full px-4 py-3 border border-gray-200 rounded-2xl text-sm text-gray-900 bg-gray-50/50 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-100"
+                                    />
                                     {errors.numeroDocumento && <p className="text-red-500 text-xs">{errors.numeroDocumento.message}</p>}
                                 </div>
                             </div>
@@ -284,24 +306,25 @@ export default function ProfilePage() {
                                     type="button"
                                     onClick={cancelarEdicion}
                                     disabled={isSaving}
-                                    className="px-5 py-3 border border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all text-xs"
+                                    className="px-5 py-3 border border-gray-200 text-gray-700 font-bold rounded-2xl hover:bg-gray-50 transition-all text-xs dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
                                 >
                                     Cancelar
                                 </button>
                             </div>
                         </form>
                     )}
+
                     {!isLoading && !isEditing && perfilData.id && (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-gray-100 pt-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t border-gray-100 pt-6 dark:border-gray-700">
                             <div>
-                                <span className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Tipo de documento</span>
-                                <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                <span className="block text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Tipo de documento</span>
+                                <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80 dark:text-gray-100 dark:bg-gray-800 dark:border-gray-700">
                                     {perfilData.tipoDocumento || perfilData.codigoTipoDocumento || "No especificado"}
                                 </p>
                             </div>
                             <div>
-                                <span className="block text-xs font-semibold uppercase tracking-wider text-gray-400">Número de documento</span>
-                                <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80">
+                                <span className="block text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">Número de documento</span>
+                                <p className="mt-1 text-sm font-medium text-gray-900 bg-gray-50/70 p-3.5 rounded-2xl border border-gray-200/80 dark:text-gray-100 dark:bg-gray-800 dark:border-gray-700">
                                     {perfilData.numeroDocumento || "No especificado"}
                                 </p>
                             </div>
