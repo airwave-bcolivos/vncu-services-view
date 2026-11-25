@@ -1,9 +1,11 @@
+
 "use client";
 
 import { useState, useEffect, useCallback, type FormEvent, type ChangeEvent } from "react";
 import Header from "@/components/header/header";
 import { ubigeoService, DistritoDto } from "../../../services/ubigeo.service";
 import { jobService, JobPayload, JobFilters, JobDetail } from "../../../services/job.service";
+import { reviewService, JobReviewResponse } from "@/services/review.service";
 
 export interface Oferta extends JobPayload {
     id: string;
@@ -15,12 +17,33 @@ export interface Oferta extends JobPayload {
 
 type DashboardTab = "PUBLICATIONS" | "ACCEPTED";
 
+type LocalProposal = {
+    id: string;
+    jobId: string;
+    technicianId: string;
+    jobTitle: string;
+    specialty: string;
+    districtName: string;
+    amount: number;
+    estimatedTime: string;
+    description: string;
+    createdAt: string;
+    status: "PENDING" | "ACCEPTED" | "REJECTED";
+};
+
+type LocalJobStatus = {
+    jobId: string;
+    technicianId: string;
+    status: "COMPLETED";
+};
+
 type AcceptedClientJob = {
     id: string;
     title: string;
     specialty: string;
     description: string;
     technicianName: string;
+    technicianId?: string;
     districtName: string;
     specificAddress?: string;
     createdAt: string;
@@ -36,6 +59,9 @@ const INITIAL_RATING: RatingForm = {
     rating: 0,
     comment: "",
 };
+
+const PROPOSALS_STORAGE_KEY = "vncu_proposals";
+const JOB_STATUS_STORAGE_KEY = "vncu_job_statuses";
 
 const OFICIOS_DISPONIBLES = [
     { id: "Electricidad", label: "Electricidad", value: "ELECTRICISTA", icon: "⚡" },
@@ -112,6 +138,9 @@ export default function ClientDashboardPage() {
     // PROPUESTAS RECIBIDAS
     const [ofertaPropuestas, setOfertaPropuestas] = useState<Oferta | null>(null);
     const [mostrarPropuestas, setMostrarPropuestas] = useState(false);
+    const [propuestasLocales, setPropuestasLocales] = useState<LocalProposal[]>([]);
+    const [errorPropuestas, setErrorPropuestas] = useState("");
+    const [procesandoPropuesta, setProcesandoPropuesta] = useState<string | null>(null);
 
     // TRABAJOS ACEPTADOS
     const [trabajosAceptados, setTrabajosAceptados] = useState<AcceptedClientJob[]>([]);
@@ -125,6 +154,82 @@ export default function ClientDashboardPage() {
     const [ratingError, setRatingError] = useState("");
     const [ratingFeedback, setRatingFeedback] = useState("");
     const [ratingSubmitting, setRatingSubmitting] = useState(false);
+    const [ratingLoading, setRatingLoading] = useState(false);
+    const [existingReview, setExistingReview] = useState<JobReviewResponse | null>(null);
+
+    // LEER PROPUESTAS GUARDADAS EN LOCALSTORAGE
+    const cargarPropuestasLocales = useCallback(() => {
+        try {
+            const stored = localStorage.getItem(PROPOSALS_STORAGE_KEY);
+
+            if (!stored) {
+                setPropuestasLocales([]);
+                return;
+            }
+
+            const parsed: unknown = JSON.parse(stored);
+
+            if (!Array.isArray(parsed)) {
+                setPropuestasLocales([]);
+                setErrorPropuestas("El almacenamiento de propuestas tiene un formato inválido.");
+                return;
+            }
+
+            const propuestasValidas = parsed.filter((item): item is LocalProposal => {
+                return (
+                    item !== null &&
+                    typeof item === "object" &&
+                    typeof item.id === "string" &&
+                    typeof item.jobId === "string" &&
+                    typeof item.technicianId === "string" &&
+                    typeof item.amount === "number" &&
+                    typeof item.estimatedTime === "string" &&
+                    typeof item.description === "string" &&
+                    typeof item.createdAt === "string" &&
+                    ["PENDING", "ACCEPTED", "REJECTED"].includes(item.status)
+                );
+            });
+
+            setPropuestasLocales(propuestasValidas);
+            setErrorPropuestas("");
+        } catch (error) {
+            console.error("Error al leer propuestas locales:", error);
+            setPropuestasLocales([]);
+            setErrorPropuestas("No se pudieron cargar las propuestas guardadas.");
+        }
+    }, []);
+
+    // CARGAR PROPUESTAS AL INICIAR
+    useEffect(() => {
+        cargarPropuestasLocales();
+    }, [cargarPropuestasLocales]);
+
+    // PROPUESTAS PERTENECIENTES A LA PUBLICACIÓN ABIERTA
+    const propuestasDeOferta = ofertaPropuestas
+        ? propuestasLocales.filter((proposal) => proposal.jobId === ofertaPropuestas.id)
+        : [];
+
+    const propuestasPendientes = propuestasDeOferta.filter(
+        (proposal) => proposal.status === "PENDING"
+    );
+
+    const propuestaAceptada = propuestasDeOferta.find(
+        (proposal) => proposal.status === "ACCEPTED"
+    );
+
+    // CONTAR PROPUESTAS LOCALES POR PUBLICACIÓN
+    const contarPropuestas = (jobId: string) => {
+        return propuestasLocales.filter((proposal) => proposal.jobId === jobId).length;
+    };
+
+    // FORMATEAR MONTO
+    const formatAmount = (amount: number) => {
+        return new Intl.NumberFormat("es-PE", {
+            style: "currency",
+            currency: "PEN",
+            minimumFractionDigits: 2,
+        }).format(amount);
+    };
 
     // CARGAR IDENTIFICADOR DEL CLIENTE
     useEffect(() => {
@@ -263,7 +368,8 @@ export default function ClientDashboardPage() {
         return () => controller.abort();
     }, [detalleId, clientId, recargaDetalle]);
 
-    // CARGAR TRABAJOS ACEPTADOS
+    // CARGAR TRABAJOS ACEPTADOS:
+    // INCLUYE PUBLICACIONES OPEN CON PROPUESTAS ACEPTADAS LOCALMENTE.
     const cargarTrabajosAceptados = useCallback(async () => {
         if (!clientId) return;
 
@@ -271,16 +377,54 @@ export default function ClientDashboardPage() {
             setCargandoAceptados(true);
             setErrorAceptados(null);
 
-            /*
-             * Se consultan las publicaciones que ya tienen un técnico asignado.
-             * IN_PROGRESS: propuesta aceptada y servicio en ejecución.
-             * COMPLETED: técnico marcó el servicio como finalizado.
-             *
-             * El backend debe actualizar el estado de la publicación
-             * cuando el cliente acepta una propuesta y cuando el técnico
-             * finaliza el trabajo.
-             */
-            const [enProceso, completados] = await Promise.all([
+            // Leer propuestas directamente para evitar utilizar un estado desactualizado.
+            const storedProposals = localStorage.getItem(PROPOSALS_STORAGE_KEY);
+            const parsedProposals: unknown = storedProposals
+                ? JSON.parse(storedProposals)
+                : [];
+
+            if (!Array.isArray(parsedProposals)) {
+                throw new Error("El almacenamiento de propuestas tiene un formato inválido.");
+            }
+
+            const propuestasAceptadas = parsedProposals.filter(
+                (proposal): proposal is LocalProposal =>
+                    proposal !== null &&
+                    typeof proposal === "object" &&
+                    typeof proposal.id === "string" &&
+                    typeof proposal.jobId === "string" &&
+                    typeof proposal.technicianId === "string" &&
+                    proposal.status === "ACCEPTED"
+            );
+
+            // Leer finalizaciones realizadas por el técnico en este navegador.
+            const storedStatuses = localStorage.getItem(JOB_STATUS_STORAGE_KEY);
+            const parsedStatuses: unknown = storedStatuses
+                ? JSON.parse(storedStatuses)
+                : [];
+
+            const estadosLocales: LocalJobStatus[] = Array.isArray(parsedStatuses)
+                ? parsedStatuses.filter(
+                    (item): item is LocalJobStatus =>
+                        item !== null &&
+                        typeof item === "object" &&
+                        typeof item.jobId === "string" &&
+                        typeof item.technicianId === "string" &&
+                        item.status === "COMPLETED"
+                )
+                : [];
+
+            // Consultar los tres estados del backend.
+            // OPEN es importante porque aceptar una propuesta local no cambia el estado del servidor.
+            const [publicadas, enProceso, completados] = await Promise.all([
+                jobService.getJobs({
+                    clientId,
+                    status: "OPEN",
+                    sortBy: "createdAt",
+                    sortDirection: "DESC",
+                    page: 0,
+                    size: 50,
+                }),
                 jobService.getJobs({
                     clientId,
                     status: "IN_PROGRESS",
@@ -299,44 +443,116 @@ export default function ClientDashboardPage() {
                 }),
             ]);
 
-            // Unificar los resultados y evitar publicaciones duplicadas.
             const publicaciones = [
+                ...publicadas.content,
                 ...enProceso.content,
                 ...completados.content,
             ];
 
+            // Eliminar publicaciones repetidas.
             const publicacionesUnicas = Array.from(
                 new Map(publicaciones.map((job) => [job.id, job])).values()
             );
 
-            // Consultar el detalle para obtener el nombre del técnico asignado.
-            const detalles = await Promise.all(
-                publicacionesUnicas.map(async (job) => {
+            const publicacionesPorId = new Map(
+                publicacionesUnicas.map((job) => [job.id, job])
+            );
+
+            // Solo incluir propuestas aceptadas que pertenezcan a publicaciones del cliente.
+            const propuestasDelCliente = propuestasAceptadas.filter(
+                (proposal) => publicacionesPorId.has(proposal.jobId)
+            );
+
+            // Los trabajos que aparecen por estado del backend también se mantienen.
+            const trabajosDelBackend = publicacionesUnicas.filter(
+                (job) => job.status === "IN_PROGRESS" || job.status === "COMPLETED"
+            );
+
+            const idsTrabajos = new Set([
+                ...trabajosDelBackend.map((job) => job.id),
+                ...propuestasDelCliente.map((proposal) => proposal.jobId),
+            ]);
+
+            const trabajosBase = Array.from(idsTrabajos)
+                .map((id) => publicacionesPorId.get(id))
+                .filter((job) => job !== undefined);
+
+            // Obtener la propuesta aceptada correspondiente a cada publicación.
+            const propuestaPorTrabajo = new Map<string, LocalProposal>();
+
+            propuestasDelCliente.forEach((proposal) => {
+                propuestaPorTrabajo.set(proposal.jobId, proposal);
+            });
+
+            // Consultar los detalles y utilizar la propuesta local como respaldo.
+            const trabajos = await Promise.all(
+                trabajosBase.map(async (job) => {
+                    const propuesta = propuestaPorTrabajo.get(job.id);
+
+                    let detalleTrabajo: JobDetail | null = null;
+
                     try {
-                        return await jobService.getJobDetail(job.id, clientId);
+                        detalleTrabajo = await jobService.getJobDetail(job.id, clientId);
                     } catch (error) {
                         console.error(
                             `No se pudo consultar el detalle del trabajo ${job.id}:`,
                             error
                         );
-                        return null;
                     }
+
+                    const finalizadoLocalmente = estadosLocales.some(
+                        (estado) =>
+                            estado.jobId === job.id &&
+                            (!propuesta ||
+                                estado.technicianId === propuesta.technicianId) &&
+                            estado.status === "COMPLETED"
+                    );
+
+                    const finalizadoEnBackend =
+                        detalleTrabajo?.status === "COMPLETED" ||
+                        job.status === "COMPLETED";
+
+                    const status =
+                        finalizadoLocalmente || finalizadoEnBackend
+                            ? "COMPLETED"
+                            : "IN_PROGRESS";
+
+                    return {
+                        id: job.id,
+                        title:
+                            detalleTrabajo?.title ||
+                            propuesta?.jobTitle ||
+                            job.title,
+                        specialty:
+                            detalleTrabajo?.specialty ||
+                            propuesta?.specialty ||
+                            job.specialty,
+                        description:
+                            detalleTrabajo?.description ||
+                            job.description ||
+                            "",
+                        technicianName:
+                            detalleTrabajo?.technicianName ||
+                            (propuesta
+                                ? `Técnico ID: ${propuesta.technicianId}`
+                                : "Técnico asignado"),
+                        technicianId: propuesta?.technicianId,
+                        districtName:
+                            detalleTrabajo?.ubigeoDistrictName ||
+                            propuesta?.districtName ||
+                            job.ubigeoDistrictName ||
+                            "Distrito no disponible",
+                        specificAddress:
+                            detalleTrabajo?.specificAddress ||
+                            job.specificAddress ||
+                            "",
+                        createdAt:
+                            detalleTrabajo?.createdAt ||
+                            job.createdAt,
+                        status,
+                    } satisfies AcceptedClientJob;
                 })
             );
-
-            const trabajos: AcceptedClientJob[] = detalles
-                .filter((job): job is JobDetail => job !== null)
-                .map((job) => ({
-                    id: job.id,
-                    title: job.title,
-                    specialty: job.specialty,
-                    description: job.description ?? "",
-                    technicianName: job.technicianName || "Técnico asignado",
-                    districtName: job.ubigeoDistrictName || "Distrito no disponible",
-                    specificAddress: job.specificAddress || "",
-                    createdAt: job.createdAt,
-                    status: job.status === "COMPLETED" ? "COMPLETED" : "IN_PROGRESS",
-                }));
 
             setTrabajosAceptados(trabajos);
         } catch (error) {
@@ -355,6 +571,28 @@ export default function ClientDashboardPage() {
             void cargarTrabajosAceptados();
         }
     }, [activeTab, clientId, cargarTrabajosAceptados]);
+
+    // SINCRONIZAR CAMBIOS DE OTRAS PESTAÑAS DEL NAVEGADOR
+    useEffect(() => {
+        const handleStorageChange = (event: StorageEvent) => {
+            if (
+                event.key === PROPOSALS_STORAGE_KEY ||
+                event.key === JOB_STATUS_STORAGE_KEY
+            ) {
+                cargarPropuestasLocales();
+
+                if (activeTab === "ACCEPTED") {
+                    void cargarTrabajosAceptados();
+                }
+            }
+        };
+
+        window.addEventListener("storage", handleStorageChange);
+
+        return () => {
+            window.removeEventListener("storage", handleStorageChange);
+        };
+    }, [activeTab, cargarPropuestasLocales, cargarTrabajosAceptados]);
 
     // FILTRAR TRABAJOS ACEPTADOS
     const trabajosAceptadosFiltrados = trabajosAceptados.filter((job) => {
@@ -561,31 +799,167 @@ export default function ClientDashboardPage() {
 
     // ABRIR Y CERRAR PROPUESTAS
     const abrirPropuestas = (oferta: Oferta) => {
+        cargarPropuestasLocales();
         setOfertaPropuestas(oferta);
         setMostrarPropuestas(true);
+        setErrorPropuestas("");
     };
 
     const cerrarPropuestas = () => {
         setMostrarPropuestas(false);
         setOfertaPropuestas(null);
+        setErrorPropuestas("");
+        setProcesandoPropuesta(null);
     };
 
-    // ABRIR MODAL DE CALIFICACIÓN
-    const abrirCalificacion = (job: AcceptedClientJob) => {
+    // ACEPTAR O RECHAZAR UNA PROPUESTA
+    const cambiarEstadoPropuesta = (
+        proposalId: string,
+        nuevoEstado: "ACCEPTED" | "REJECTED"
+    ) => {
+        if (!ofertaPropuestas || procesandoPropuesta) return;
+
+        setProcesandoPropuesta(proposalId);
+        setErrorPropuestas("");
+
+        try {
+            const stored = localStorage.getItem(PROPOSALS_STORAGE_KEY);
+            const parsed: unknown = stored ? JSON.parse(stored) : [];
+
+            if (!Array.isArray(parsed)) {
+                throw new Error("El almacenamiento de propuestas no tiene un formato válido.");
+            }
+
+            const propuestasActuales = parsed as LocalProposal[];
+
+            const propuestaObjetivo = propuestasActuales.find(
+                (proposal) =>
+                    proposal.id === proposalId &&
+                    proposal.jobId === ofertaPropuestas.id
+            );
+
+            if (!propuestaObjetivo) {
+                setErrorPropuestas(
+                    "No se encontró esta propuesta. Actualiza la ventana e inténtalo nuevamente."
+                );
+                cargarPropuestasLocales();
+                return;
+            }
+
+            if (propuestaObjetivo.status !== "PENDING") {
+                setErrorPropuestas("Esta propuesta ya fue procesada anteriormente.");
+                cargarPropuestasLocales();
+                return;
+            }
+
+            if (nuevoEstado === "ACCEPTED") {
+                const otraAceptada = propuestasActuales.some(
+                    (proposal) =>
+                        proposal.jobId === ofertaPropuestas.id &&
+                        proposal.id !== proposalId &&
+                        proposal.status === "ACCEPTED"
+                );
+
+                if (otraAceptada) {
+                    setErrorPropuestas(
+                        "Esta publicación ya tiene una propuesta aceptada."
+                    );
+                    cargarPropuestasLocales();
+                    return;
+                }
+            }
+
+            const propuestasActualizadas = propuestasActuales.map((proposal) => {
+                if (proposal.id === proposalId) {
+                    return {
+                        ...proposal,
+                        status: nuevoEstado,
+                    };
+                }
+
+                // Al aceptar una propuesta, las demás pendientes quedan rechazadas.
+                if (
+                    nuevoEstado === "ACCEPTED" &&
+                    proposal.jobId === ofertaPropuestas.id &&
+                    proposal.status === "PENDING"
+                ) {
+                    return {
+                        ...proposal,
+                        status: "REJECTED" as const,
+                    };
+                }
+
+                return proposal;
+            });
+
+            localStorage.setItem(
+                PROPOSALS_STORAGE_KEY,
+                JSON.stringify(propuestasActualizadas)
+            );
+
+            setPropuestasLocales(propuestasActualizadas);
+
+            setSuccessMessage(
+                nuevoEstado === "ACCEPTED"
+                    ? "Propuesta aceptada localmente. El trabajo aparecerá en Trabajos aceptados y en el panel del técnico de este navegador."
+                    : "Propuesta rechazada correctamente."
+            );
+
+            if (nuevoEstado === "ACCEPTED" && activeTab === "ACCEPTED") {
+                void cargarTrabajosAceptados();
+            }
+        } catch (error) {
+            console.error("Error al actualizar propuesta:", error);
+            setErrorPropuestas(
+                "No se pudo actualizar la propuesta. Verifica el almacenamiento del navegador."
+            );
+        } finally {
+            setProcesandoPropuesta(null);
+        }
+    };
+
+    // CONSULTAR SI EL TRABAJO YA TIENE UNA CALIFICACIÓN
+    const abrirCalificacion = async (job: AcceptedClientJob) => {
         if (job.status !== "COMPLETED") return;
 
         setTrabajoCalificar(job);
         setRatingForm(INITIAL_RATING);
+        setExistingReview(null);
         setRatingError("");
         setRatingFeedback("");
+        setRatingLoading(true);
+
+        try {
+            const review = await reviewService.getJobReviewByJobOffer(job.id);
+
+            setExistingReview(review);
+            setRatingForm({
+                rating: review.rating,
+                comment: review.comment ?? "",
+            });
+        } catch (error) {
+            const status = (error as { response?: { status?: number } })?.response?.status;
+
+            if (status === 404) {
+                setExistingReview(null);
+            } else {
+                console.error("Error al consultar la calificación previa:", error);
+                setRatingError(
+                    "No se pudo consultar la calificación anterior. Puedes intentar registrar tu calificación."
+                );
+            }
+        } finally {
+            setRatingLoading(false);
+        }
     };
 
     // CERRAR MODAL DE CALIFICACIÓN
     const cerrarCalificacion = () => {
-        if (ratingSubmitting) return;
+        if (ratingSubmitting || ratingLoading) return;
 
         setTrabajoCalificar(null);
         setRatingForm(INITIAL_RATING);
+        setExistingReview(null);
         setRatingError("");
         setRatingFeedback("");
     };
@@ -609,42 +983,80 @@ export default function ClientDashboardPage() {
             return;
         }
 
+        if (existingReview) {
+            setRatingError("Este trabajo ya tiene una calificación registrada.");
+            return;
+        }
+
+        if (ratingLoading) {
+            setRatingError("Espera mientras se consulta la calificación anterior.");
+            return;
+        }
+
         if (ratingForm.rating < 1 || ratingForm.rating > 5) {
             setRatingError("Selecciona una calificación de 1 a 5 estrellas.");
+            return;
+        }
+
+        if (ratingForm.comment.length > 1000) {
+            setRatingError("El comentario no puede superar los 1000 caracteres.");
             return;
         }
 
         setRatingSubmitting(true);
 
         try {
-            const payload = {
-                jobId: trabajoCalificar.id,
-                clientId,
-                rating: ratingForm.rating,
-                comment: ratingForm.comment.trim(),
-            };
-
-            /*
-             * PENDIENTE DE BACKEND:
-             *
-             * Aquí se conectará el servicio para registrar la calificación
-             * del cliente hacia el técnico.
-             *
-             * Ejemplo futuro:
-             * await ratingService.rateTechnician(payload);
-             *
-             * No se marca la calificación como guardada porque todavía
-             * no existe la conexión con el endpoint correspondiente.
-             */
-
-            console.log("Calificación preparada para conectar:", payload);
-
-            setRatingFeedback(
-                "La calificación está validada. Para guardarla definitivamente, falta conectar el servicio de calificaciones del backend."
+            const review = await reviewService.createJobReview(
+                trabajoCalificar.id,
+                {
+                    rating: ratingForm.rating,
+                    comment: ratingForm.comment.trim() || undefined,
+                }
             );
+
+            setExistingReview(review);
+            setRatingForm({
+                rating: review.rating,
+                comment: review.comment ?? "",
+            });
+
+            setRatingFeedback("¡Tu calificación se registró correctamente!");
+            setRatingError("");
         } catch (error) {
-            console.error("Error al preparar la calificación:", error);
-            setRatingError("No se pudo preparar la calificación. Inténtalo nuevamente.");
+            const status = (error as { response?: { status?: number } })?.response?.status;
+
+            console.error("Error al registrar la calificación:", error);
+
+            if (status === 409) {
+                try {
+                    const review = await reviewService.getJobReviewByJobOffer(
+                        trabajoCalificar.id
+                    );
+
+                    setExistingReview(review);
+                    setRatingForm({
+                        rating: review.rating,
+                        comment: review.comment ?? "",
+                    });
+                    setRatingFeedback(
+                        "Este trabajo ya tenía una calificación registrada. Se muestra la calificación existente."
+                    );
+                    setRatingError("");
+                } catch (reviewError) {
+                    console.error("Error al recuperar la calificación existente:", reviewError);
+                    setRatingError(
+                        "El trabajo ya tiene una calificación, pero no se pudo recuperar."
+                    );
+                }
+            } else if (status === 400 || status === 422) {
+                setRatingError(
+                    "El trabajo aparece finalizado en este navegador, pero el servidor todavía no reconoce el estado COMPLETED. No se pudo guardar la calificación."
+                );
+            } else {
+                setRatingError(
+                    "No se pudo registrar la calificación. Verifica tu conexión e inténtalo nuevamente."
+                );
+            }
         } finally {
             setRatingSubmitting(false);
         }
@@ -682,7 +1094,7 @@ export default function ClientDashboardPage() {
                         <p className="text-sm leading-relaxed text-blue-100">
                             {activeTab === "PUBLICATIONS"
                                 ? "Publica tu requerimiento, revisa las propuestas y encuentra profesionales para tus servicios."
-                                : "Consulta los trabajos que tienen un técnico asignado y revisa el avance de cada servicio."}
+                                : "Consulta los trabajos aceptados, revisa su avance y califica al técnico cuando finalice el servicio."}
                         </p>
                     </div>
 
@@ -711,56 +1123,47 @@ export default function ClientDashboardPage() {
             </div>
 
             <section className="mx-auto w-full max-w-5xl flex-1 space-y-8 px-4 py-8 md:py-10">
+                {/* PESTAÑAS */}
+                <div className="flex flex-col gap-2 rounded-2xl border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setActiveTab("PUBLICATIONS");
+                                setErrorMessage(null);
+                                setSuccessMessage(null);
+                            }}
+                            className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition ${
+                                activeTab === "PUBLICATIONS"
+                                    ? "bg-blue-600 text-white shadow-md"
+                                    : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                            }`}
+                        >
+                            📋 Mis publicaciones
+                            <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">
+                                {total}
+                            </span>
+                        </button>
 
-                {/* PESTAÑAS DEL PANEL */}
-                <div className="flex flex-col gap-2 rounded-2xl border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-800 dark:bg-gray-900 sm:flex-row">
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setActiveTab("PUBLICATIONS");
-                            setErrorMessage(null);
-                            setSuccessMessage(null);
-                        }}
-                        className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition ${
-                            activeTab === "PUBLICATIONS"
-                                ? "bg-blue-600 text-white shadow-md"
-                                : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                        }`}
-                    >
-                        <span>📋</span>
-                        Mis publicaciones
-                        <span className={`rounded-full px-2 py-0.5 text-xs ${
-                            activeTab === "PUBLICATIONS"
-                                ? "bg-white/20 text-white"
-                                : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-                        }`}>
-                            {total}
-                        </span>
-                    </button>
-
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setActiveTab("ACCEPTED");
-                            setErrorMessage(null);
-                            setSuccessMessage(null);
-                        }}
-                        className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition ${
-                            activeTab === "ACCEPTED"
-                                ? "bg-blue-600 text-white shadow-md"
-                                : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                        }`}
-                    >
-                        <span>🛠️</span>
-                        Trabajos aceptados
-                        <span className={`rounded-full px-2 py-0.5 text-xs ${
-                            activeTab === "ACCEPTED"
-                                ? "bg-white/20 text-white"
-                                : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-                        }`}>
-                            {trabajosAceptados.length}
-                        </span>
-                    </button>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setActiveTab("ACCEPTED");
+                                setErrorMessage(null);
+                                setSuccessMessage(null);
+                            }}
+                            className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition ${
+                                activeTab === "ACCEPTED"
+                                    ? "bg-blue-600 text-white shadow-md"
+                                    : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                            }`}
+                        >
+                            🛠️ Trabajos aceptados
+                            <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">
+                                {trabajosAceptados.length}
+                            </span>
+                        </button>
+                    </div>
                 </div>
 
                 {/* MENSAJES GENERALES */}
@@ -771,17 +1174,14 @@ export default function ClientDashboardPage() {
                 )}
 
                 {successMessage && (
-                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center text-xs font-semibold text-emerald-600 transition-all duration-300 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center text-xs font-semibold text-emerald-600 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
                         {successMessage}
                     </div>
                 )}
 
-                {/* ========================================= */}
-                {/* PESTAÑA: MIS PUBLICACIONES */}
-                {/* ========================================= */}
+                {/* PESTAÑA: PUBLICACIONES */}
                 {activeTab === "PUBLICATIONS" && (
                     <div className="space-y-6">
-
                         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                             <div>
                                 <div className="flex items-center gap-2">
@@ -792,7 +1192,6 @@ export default function ClientDashboardPage() {
                                         Tus Solicitudes Creadas
                                     </h2>
                                 </div>
-
                                 <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
                                     Administra tus requerimientos y consulta las propuestas recibidas.
                                 </p>
@@ -810,13 +1209,13 @@ export default function ClientDashboardPage() {
                                         setErrorMessage(null);
                                         setSuccessMessage(null);
                                     }}
-                                    className={`flex items-center gap-2 rounded-xl px-5 py-3 text-xs font-bold shadow-lg transition-all duration-300 hover:-translate-y-0.5 active:scale-95 ${
+                                    className={`flex items-center gap-2 rounded-xl px-5 py-3 text-xs font-bold shadow-lg transition-all hover:-translate-y-0.5 active:scale-95 ${
                                         mostrarFormulario
-                                            ? "border border-gray-200 bg-white text-gray-600 shadow-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                                            : "bg-blue-600 text-white shadow-blue-600/20 hover:bg-blue-700 hover:shadow-blue-600/30"
+                                            ? "border border-gray-200 bg-white text-gray-600 shadow-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                                            : "bg-blue-600 text-white shadow-blue-600/20 hover:bg-blue-700"
                                     }`}
                                 >
-                                    <span className="text-lg leading-none">
+                                    <span className="text-lg">
                                         {mostrarFormulario ? "✕" : "+"}
                                     </span>
                                     {mostrarFormulario ? "Cerrar formulario" : "Crear publicación"}
@@ -826,27 +1225,22 @@ export default function ClientDashboardPage() {
 
                         {/* FORMULARIO DESPLEGABLE */}
                         {mostrarFormulario && (
-                            <div className="animate-fade-in space-y-8 rounded-3xl border border-blue-100 bg-white p-6 shadow-sm transition-all duration-300 dark:border-blue-900/50 dark:bg-gray-900 md:p-10">
-
-                                <div className="flex items-start justify-between gap-4 border-b border-gray-100 pb-5 dark:border-gray-800">
-                                    <div className="flex items-center gap-2">
-                                        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-xl dark:bg-blue-950/60">
-                                            ✨
-                                        </span>
-                                        <div>
-                                            <h2 className="text-xl font-bold tracking-tight text-gray-900 dark:text-white">
-                                                Crear nueva solicitud
-                                            </h2>
-                                            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-                                                Completa los campos principales de tu requerimiento.
-                                            </p>
-                                        </div>
+                            <div className="space-y-8 rounded-3xl border border-blue-100 bg-white p-6 shadow-sm dark:border-blue-900/50 dark:bg-gray-900 md:p-10">
+                                <div className="flex items-start gap-2 border-b border-gray-100 pb-5 dark:border-gray-800">
+                                    <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-xl dark:bg-blue-950/60">
+                                        ✨
+                                    </span>
+                                    <div>
+                                        <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+                                            Crear nueva solicitud
+                                        </h2>
+                                        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                                            Completa los campos principales de tu requerimiento.
+                                        </p>
                                     </div>
                                 </div>
 
                                 <form onSubmit={handleSubmit} className="space-y-8">
-
-                                    {/* ESPECIALIDADES */}
                                     <div className="space-y-3">
                                         <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                                             Especialidad Requerida *
@@ -858,10 +1252,10 @@ export default function ClientDashboardPage() {
                                                     key={item.id}
                                                     type="button"
                                                     onClick={() => handleSelectOficio(item.value)}
-                                                    className={`flex flex-col items-center justify-center gap-2 rounded-2xl border p-3.5 text-center transition-all duration-300 hover:-translate-y-1 ${
+                                                    className={`flex flex-col items-center justify-center gap-2 rounded-2xl border p-3.5 text-center transition-all hover:-translate-y-1 ${
                                                         form.oficio === item.value
                                                             ? "scale-[1.02] border-blue-600 bg-blue-50/70 font-bold text-blue-600 shadow-md ring-2 ring-blue-600/10 dark:border-blue-500 dark:bg-blue-950/50 dark:text-blue-300"
-                                                            : "border-gray-200/80 text-gray-600 hover:border-blue-200 hover:bg-gray-50/80 dark:border-gray-700 dark:text-gray-300 dark:hover:border-blue-800 dark:hover:bg-gray-800"
+                                                            : "border-gray-200/80 text-gray-600 hover:border-blue-200 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
                                                     }`}
                                                 >
                                                     <span className="text-2xl">{item.icon}</span>
@@ -871,23 +1265,16 @@ export default function ClientDashboardPage() {
                                         </div>
                                     </div>
 
-                                    {/* TÍTULO */}
                                     <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                                         <div className="space-y-2">
                                             <div className="flex items-center justify-between">
-                                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                                                     Título de la Solicitud *
                                                 </label>
-
-                                                <span className={`text-[11px] font-medium ${
-                                                    form.titulo.length >= MAX_TITULO_LENGTH
-                                                        ? "font-bold text-red-500"
-                                                        : "text-gray-400 dark:text-gray-500"
-                                                }`}>
-                                                    {form.titulo.length} / {MAX_TITULO_LENGTH}
+                                                <span className="text-[11px] text-gray-400">
+                                                    {form.titulo.length}/{MAX_TITULO_LENGTH}
                                                 </span>
                                             </div>
-
                                             <input
                                                 type="text"
                                                 name="titulo"
@@ -900,13 +1287,11 @@ export default function ClientDashboardPage() {
                                         </div>
                                     </div>
 
-                                    {/* DIRECCIÓN Y DISTRITO */}
                                     <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                                         <div className="space-y-2">
                                             <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                                                 Dirección Exacta del Servicio *
                                             </label>
-
                                             <input
                                                 type="text"
                                                 name="direccion"
@@ -922,7 +1307,6 @@ export default function ClientDashboardPage() {
                                             <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                                                 Distrito *
                                             </label>
-
                                             <select
                                                 name="ubigeoDistrictId"
                                                 value={form.ubigeoDistrictId}
@@ -942,22 +1326,15 @@ export default function ClientDashboardPage() {
                                         </div>
                                     </div>
 
-                                    {/* DESCRIPCIÓN */}
                                     <div className="space-y-2">
                                         <div className="flex items-center justify-between">
                                             <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                                                 Descripción Detallada *
                                             </label>
-
-                                            <span className={`text-[11px] font-medium ${
-                                                form.descripcion.length >= MAX_DESCRIPCION_LENGTH
-                                                    ? "font-bold text-red-500"
-                                                    : "text-gray-400 dark:text-gray-500"
-                                            }`}>
-                                                {form.descripcion.length} / {MAX_DESCRIPCION_LENGTH} caracteres
+                                            <span className="text-[11px] text-gray-400">
+                                                {form.descripcion.length}/{MAX_DESCRIPCION_LENGTH} caracteres
                                             </span>
                                         </div>
-
                                         <textarea
                                             name="descripcion"
                                             rows={5}
@@ -969,7 +1346,6 @@ export default function ClientDashboardPage() {
                                         />
                                     </div>
 
-                                    {/* ACCIONES */}
                                     <div className="flex flex-col-reverse gap-3 border-t border-gray-100 pt-6 dark:border-gray-800 sm:flex-row sm:justify-end">
                                         <button
                                             type="button"
@@ -977,15 +1353,14 @@ export default function ClientDashboardPage() {
                                                 resetForm();
                                                 setMostrarFormulario(false);
                                             }}
-                                            className="rounded-2xl border border-gray-200 bg-white px-6 py-3.5 text-sm font-semibold text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+                                            className="rounded-2xl border border-gray-200 bg-white px-6 py-3.5 text-sm font-semibold text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
                                         >
                                             Cancelar
                                         </button>
-
                                         <button
                                             type="submit"
                                             disabled={isLoading || !clientId}
-                                            className="rounded-2xl bg-blue-600 px-8 py-3.5 text-sm font-bold text-white shadow-lg shadow-blue-600/20 transition-all duration-300 hover:bg-blue-700 hover:shadow-blue-600/30 active:scale-95 disabled:opacity-50"
+                                            className="rounded-2xl bg-blue-600 px-8 py-3.5 text-sm font-bold text-white shadow-lg hover:bg-blue-700 disabled:opacity-50"
                                         >
                                             {isLoading ? "Publicando..." : "Publicar Solicitud"}
                                         </button>
@@ -1120,11 +1495,10 @@ export default function ClientDashboardPage() {
                             <div className="flex gap-3 sm:col-span-2 lg:col-span-3">
                                 <button
                                     type="submit"
-                                    className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-blue-700"
+                                    className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700"
                                 >
                                     Aplicar filtros
                                 </button>
-
                                 <button
                                     type="button"
                                     onClick={() => {
@@ -1137,7 +1511,7 @@ export default function ClientDashboardPage() {
                                             size: 10,
                                         });
                                     }}
-                                    className="rounded-xl bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                                    className="rounded-xl bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200"
                                 >
                                     Limpiar filtros
                                 </button>
@@ -1166,7 +1540,7 @@ export default function ClientDashboardPage() {
                                 </button>
                             </div>
                         ) : ofertas.length === 0 ? (
-                            <div className="space-y-3 rounded-3xl border border-gray-200/70 bg-white p-12 text-center transition-all duration-300 dark:border-gray-800 dark:bg-gray-900">
+                            <div className="space-y-3 rounded-3xl border border-gray-200/70 bg-white p-12 text-center dark:border-gray-800 dark:bg-gray-900">
                                 <p className="text-4xl text-gray-300 dark:text-gray-600">📂</p>
                                 <p className="text-sm font-semibold text-gray-600 dark:text-gray-300">
                                     No se encontraron solicitudes
@@ -1174,88 +1548,105 @@ export default function ClientDashboardPage() {
                                 <p className="text-xs text-gray-400 dark:text-gray-500">
                                     Intenta cambiar los filtros o publica un nuevo requerimiento.
                                 </p>
-
                                 {!mostrarFormulario && (
                                     <button
                                         type="button"
                                         onClick={() => setMostrarFormulario(true)}
-                                        className="mt-3 rounded-xl bg-blue-600 px-5 py-3 text-xs font-bold text-white transition-colors hover:bg-blue-700"
+                                        className="mt-3 rounded-xl bg-blue-600 px-5 py-3 text-xs font-bold text-white hover:bg-blue-700"
                                     >
                                         + Crear mi primera publicación
                                     </button>
                                 )}
                             </div>
                         ) : (
-                            <div className="grid grid-cols-1 gap-4">
-                                {ofertas.map((item) => (
-                                    <div
-                                        key={item.id}
-                                        className="group flex transform flex-col items-start justify-between gap-6 rounded-3xl border border-gray-200/70 bg-white p-6 transition-all duration-300 hover:-translate-y-1 hover:border-blue-300 hover:shadow-lg dark:border-gray-800 dark:bg-gray-900 dark:hover:border-blue-700 md:flex-row md:items-center"
-                                    >
-                                        <div className="flex-1 space-y-3">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700 transition-colors group-hover:bg-blue-50 group-hover:text-blue-600 dark:bg-gray-800 dark:text-gray-300 dark:group-hover:bg-blue-950 dark:group-hover:text-blue-300">
-                                                    {item.specialty}
-                                                </span>
 
-                                                <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                                                    item.estado === "ACTIVA"
-                                                        ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-300"
-                                                        : item.estado === "EN PROCESO"
-                                                            ? "bg-amber-50 text-amber-600 dark:bg-amber-950/50 dark:text-amber-300"
-                                                            : item.estado === "COMPLETADA"
-                                                                ? "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300"
-                                                                : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
-                                                }`}>
-                                                    {item.estado}
-                                                </span>
+                            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                                {ofertas.map((item) => {
+                                    const propuestasCount = contarPropuestas(item.id);
 
-                                                <span className="text-xs text-gray-400 dark:text-gray-500">
-                                                    Creado el {item.fechaCreacion}
-                                                </span>
+                                    const estadoDisponible = item.estado === "ACTIVA";
+
+                                    return (
+                                        <article
+                                            key={item.id}
+                                            className="flex flex-col rounded-2xl border border-gray-200 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md dark:border-gray-800 dark:bg-gray-900"
+                                        >
+                                            {/* ESPECIALIDAD Y ESTADO */}
+                                            <div className="mb-4 flex items-start justify-between gap-3">
+                    <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                        {item.specialty}
+                    </span>
+
+                                                <span
+                                                    className={`rounded-full px-3 py-1 text-xs font-medium ${
+                                                        estadoDisponible
+                                                            ? "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300"
+                                                            : item.estado === "EN PROCESO"
+                                                                ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                                                                : item.estado === "COMPLETADA"
+                                                                    ? "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                                                                    : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                                                    }`}
+                                                >
+                        {item.estado}
+                    </span>
                                             </div>
 
-                                            <div>
-                                                <h3 className="text-base font-bold text-gray-900 transition-colors duration-200 group-hover:text-blue-600 dark:text-white dark:group-hover:text-blue-400">
-                                                    {item.title}
-                                                </h3>
+                                            {/* TÍTULO Y DESCRIPCIÓN */}
+                                            <h3 className="mb-2 text-lg font-bold text-gray-900 dark:text-white">
+                                                {item.title}
+                                            </h3>
 
-                                                <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                                                    {item.description}
-                                                </p>
-                                            </div>
+                                            <p className="mb-4 line-clamp-3 flex-1 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
+                                                {item.description ||
+                                                    "No agregaste una descripción para esta solicitud."}
+                                            </p>
 
-                                            <div className="flex flex-wrap items-center gap-4 text-xs text-gray-400 dark:text-gray-500">
-                                                <div className="flex items-center gap-1">
-                                                    <span>📍</span>
-                                                    <span className="font-medium text-gray-600 dark:text-gray-300">
-                                                        {[
-                                                            item.specificAddress,
-                                                            item.nombreDistrito ??
-                                                            distritos.find(
-                                                                (distrito) =>
-                                                                    distrito.id === item.ubigeoDistrictId
-                                                            )?.name,
-                                                        ]
-                                                            .filter(Boolean)
-                                                            .join(", ") || "Distrito no disponible"}
-                                                    </span>
+                                            {/* INFORMACIÓN */}
+                                            <div className="space-y-3 border-t border-gray-100 pt-4 dark:border-gray-800">
+                                                <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">
+                            Ubicación
+                        </span>
+                                                    <span className="max-w-[65%] text-right font-medium text-gray-900 dark:text-gray-200">
+                            {[
+                                item.specificAddress,
+                                item.nombreDistrito ??
+                                distritos.find(
+                                    (distrito) =>
+                                        distrito.id === item.ubigeoDistrictId
+                                )?.name,
+                            ]
+                                .filter(Boolean)
+                                .join(", ") || "Distrito no disponible"}
+                        </span>
                                                 </div>
 
-                                                <div className="flex items-center gap-1 font-semibold text-blue-600 dark:text-blue-400">
-                                                    <span>💬</span>
-                                                    <span>{item.propuestasCount} propuestas</span>
+                                                <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">
+                            Publicado
+                        </span>
+                                                    <span className="font-medium text-gray-900 dark:text-gray-200">
+                            {item.fechaCreacion}
+                        </span>
+                                                </div>
+
+                                                <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">
+                            Propuestas
+                        </span>
+                                                    <span className="font-semibold text-blue-600 dark:text-blue-400">
+                            {propuestasCount}
+                        </span>
                                                 </div>
                                             </div>
-                                        </div>
 
-                                        {/* BOTONES */}
-                                        <div className="flex w-full flex-col gap-3 border-t border-gray-100 pt-4 dark:border-gray-800 md:w-auto md:items-end md:border-t-0 md:pt-0">
-                                            <div className="flex w-full flex-wrap items-center gap-2 md:w-auto">
+                                            {/* BOTONES */}
+                                            <div className="mt-5 grid grid-cols-2 gap-3">
                                                 <button
                                                     type="button"
                                                     onClick={() => abrirDetalle(item)}
-                                                    className="flex-1 rounded-xl bg-gray-100 px-4 py-2.5 text-xs font-bold text-gray-700 shadow-sm transition-all duration-300 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700 md:flex-none"
+                                                    className="rounded-xl border border-gray-300 px-3 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
                                                 >
                                                     Ver detalles
                                                 </button>
@@ -1263,25 +1654,28 @@ export default function ClientDashboardPage() {
                                                 <button
                                                     type="button"
                                                     onClick={() => abrirPropuestas(item)}
-                                                    className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-sm shadow-blue-600/20 transition-all duration-300 hover:bg-blue-700 md:flex-none"
+                                                    className="rounded-xl bg-blue-600 px-3 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
                                                 >
-                                                    💬 Ver propuestas ({item.propuestasCount})
-                                                </button>
-
-                                                <button
-                                                    type="button"
-                                                    onClick={() => handleEliminar(item.id)}
-                                                    disabled={eliminandoId !== null}
-                                                    className="rounded-xl p-2.5 text-xs text-gray-400 transition-all duration-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 dark:text-gray-500 dark:hover:bg-red-950/50 dark:hover:text-red-400"
-                                                    title="Eliminar"
-                                                >
-                                                    ✕
+                                                    Ver propuestas
                                                 </button>
                                             </div>
-                                        </div>
-                                    </div>
-                                ))}
+
+                                            {/* ELIMINAR */}
+                                            <button
+                                                type="button"
+                                                onClick={() => handleEliminar(item.id)}
+                                                disabled={eliminandoId !== null}
+                                                className="mt-3 w-full rounded-xl border border-red-200 px-3 py-2.5 text-xs font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/30"
+                                            >
+                                                {eliminandoId === item.id
+                                                    ? "Eliminando..."
+                                                    : "Eliminar publicación"}
+                                            </button>
+                                        </article>
+                                    );
+                                })}
                             </div>
+
                         )}
 
                         {/* PAGINACIÓN */}
@@ -1295,15 +1689,13 @@ export default function ClientDashboardPage() {
                                         page: prev.page - 1,
                                     }))
                                 }
-                                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
                             >
                                 Anterior
                             </button>
-
                             <span>
                                 Página {totalPaginas === 0 ? 0 : consulta.page + 1} de {totalPaginas}
                             </span>
-
                             <button
                                 type="button"
                                 disabled={cargandoLista || consulta.page + 1 >= totalPaginas}
@@ -1313,7 +1705,7 @@ export default function ClientDashboardPage() {
                                         page: prev.page + 1,
                                     }))
                                 }
-                                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
                             >
                                 Siguiente
                             </button>
@@ -1321,25 +1713,21 @@ export default function ClientDashboardPage() {
                     </div>
                 )}
 
-                {/* ========================================= */}
                 {/* PESTAÑA: TRABAJOS ACEPTADOS */}
-                {/* ========================================= */}
                 {activeTab === "ACCEPTED" && (
                     <div className="space-y-6">
-
                         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
                             <div>
                                 <div className="flex items-center gap-2">
                                     <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-100 text-lg dark:bg-blue-950/60">
                                         🛠️
                                     </span>
-                                    <h2 className="text-xl font-bold tracking-tight text-gray-900 dark:text-white">
+                                    <h2 className="text-xl font-bold text-gray-900 dark:text-white">
                                         Trabajos aceptados
                                     </h2>
                                 </div>
-
                                 <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                                    Aquí puedes revisar el avance de los servicios que ya tienen un técnico asignado.
+                                    Aquí puedes revisar el avance de los servicios con propuestas aceptadas o técnicos asignados.
                                 </p>
                             </div>
 
@@ -1347,47 +1735,32 @@ export default function ClientDashboardPage() {
                                 type="button"
                                 onClick={() => void cargarTrabajosAceptados()}
                                 disabled={cargandoAceptados}
-                                className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-xs font-semibold text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                                className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
                             >
                                 {cargandoAceptados ? "Actualizando..." : "↻ Actualizar"}
                             </button>
                         </div>
 
-                        {/* RESUMEN DE ESTADOS */}
+                        {/* RESUMEN */}
                         <div className="grid gap-4 sm:grid-cols-2">
                             <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900/60 dark:bg-blue-950/30">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">
-                                            En proceso
-                                        </p>
-                                        <p className="mt-1 text-2xl font-extrabold text-blue-900 dark:text-blue-100">
-                                            {trabajosEnProceso}
-                                        </p>
-                                    </div>
-                                    <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-100 text-2xl dark:bg-blue-900/50">
-                                        🔧
-                                    </span>
-                                </div>
+                                <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">
+                                    En proceso
+                                </p>
+                                <p className="mt-1 text-2xl font-extrabold text-blue-900 dark:text-blue-100">
+                                    {trabajosEnProceso}
+                                </p>
                                 <p className="mt-2 text-xs text-blue-700/80 dark:text-blue-300/80">
-                                    Servicios que están siendo realizados por un técnico.
+                                    Servicios que todavía no han sido marcados como finalizados.
                                 </p>
                             </div>
-
                             <div className="rounded-2xl border border-green-200 bg-green-50 p-5 dark:border-green-900/60 dark:bg-green-950/30">
-                                <div className="flex items-center justify-between">
-                                    <div>
-                                        <p className="text-sm font-semibold text-green-700 dark:text-green-300">
-                                            Finalizados
-                                        </p>
-                                        <p className="mt-1 text-2xl font-extrabold text-green-900 dark:text-green-100">
-                                            {trabajosCompletados}
-                                        </p>
-                                    </div>
-                                    <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-green-100 text-2xl dark:bg-green-900/50">
-                                        ✓
-                                    </span>
-                                </div>
+                                <p className="text-sm font-semibold text-green-700 dark:text-green-300">
+                                    Finalizados
+                                </p>
+                                <p className="mt-1 text-2xl font-extrabold text-green-900 dark:text-green-100">
+                                    {trabajosCompletados}
+                                </p>
                                 <p className="mt-2 text-xs text-green-700/80 dark:text-green-300/80">
                                     Servicios que el técnico ya marcó como finalizados.
                                 </p>
@@ -1408,7 +1781,6 @@ export default function ClientDashboardPage() {
                             />
                         </div>
 
-                        {/* ERROR */}
                         {errorAceptados && (
                             <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
                                 {errorAceptados}
@@ -1422,7 +1794,6 @@ export default function ClientDashboardPage() {
                             </div>
                         )}
 
-                        {/* CARGANDO */}
                         {cargandoAceptados ? (
                             <div className="grid gap-5 sm:grid-cols-2">
                                 {[1, 2].map((item) => (
@@ -1433,7 +1804,6 @@ export default function ClientDashboardPage() {
                                 ))}
                             </div>
                         ) : trabajosAceptadosFiltrados.length === 0 ? (
-                            /* SIN TRABAJOS */
                             <div className="rounded-3xl border border-dashed border-gray-300 bg-white px-6 py-16 text-center dark:border-gray-700 dark:bg-gray-900">
                                 <div className="mb-4 text-5xl">📋</div>
                                 <h3 className="text-lg font-bold text-gray-900 dark:text-white">
@@ -1444,31 +1814,27 @@ export default function ClientDashboardPage() {
                                 <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-gray-500 dark:text-gray-400">
                                     {busquedaAceptados
                                         ? "No encontramos trabajos que coincidan con tu búsqueda."
-                                        : "Cuando aceptes una propuesta y la publicación pase a estado En progreso, el trabajo aparecerá aquí. Podrás consultar al técnico asignado y revisar el avance del servicio."}
+                                        : "Cuando aceptes una propuesta, el trabajo aparecerá aquí. También podrás consultar su avance y calificar al técnico cuando lo marque como finalizado."}
                                 </p>
-
                                 <button
                                     type="button"
                                     onClick={() => setActiveTab("PUBLICATIONS")}
-                                    className="mt-6 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+                                    className="mt-6 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
                                 >
                                     Volver a mis publicaciones
                                 </button>
                             </div>
                         ) : (
-                            /* LISTADO DE TRABAJOS ACEPTADOS */
                             <div className="grid gap-5 sm:grid-cols-2">
                                 {trabajosAceptadosFiltrados.map((job) => (
                                     <article
                                         key={job.id}
                                         className="flex flex-col rounded-2xl border border-gray-200 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md dark:border-gray-800 dark:bg-gray-900"
                                     >
-                                        {/* CABECERA DE LA TARJETA */}
                                         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
                                             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
                                                 {job.specialty}
                                             </span>
-
                                             {job.status === "IN_PROGRESS" ? (
                                                 <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-950 dark:text-amber-300">
                                                     En proceso
@@ -1480,23 +1846,20 @@ export default function ClientDashboardPage() {
                                             )}
                                         </div>
 
-                                        {/* INFORMACIÓN DEL TRABAJO */}
                                         <h3 className="mb-2 text-lg font-bold text-gray-900 dark:text-white">
                                             {job.title}
                                         </h3>
-
-                                        <p className="mb-5 line-clamp-3 flex-1 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
+                                        <p className="mb-5 line-clamp-3 flex-1 text-sm text-gray-600 dark:text-gray-400">
                                             {job.description || "Sin descripción disponible."}
                                         </p>
 
-                                        {/* DATOS DEL TÉCNICO */}
                                         <div className="space-y-3 rounded-2xl border border-gray-100 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-800/50">
                                             <div className="flex items-center gap-3">
                                                 <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100 text-lg dark:bg-blue-900/50">
                                                     👨‍🔧
                                                 </div>
                                                 <div className="min-w-0">
-                                                    <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                                    <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
                                                         Técnico asignado
                                                     </p>
                                                     <p className="truncate text-sm font-bold text-gray-900 dark:text-white">
@@ -1505,7 +1868,7 @@ export default function ClientDashboardPage() {
                                                 </div>
                                             </div>
 
-                                            <div className="flex items-center justify-between gap-3 border-t border-gray-200 pt-3 text-sm dark:border-gray-700">
+                                            <div className="flex justify-between gap-3 border-t border-gray-200 pt-3 text-sm dark:border-gray-700">
                                                 <span className="text-gray-500 dark:text-gray-400">
                                                     Ubicación
                                                 </span>
@@ -1515,7 +1878,7 @@ export default function ClientDashboardPage() {
                                             </div>
 
                                             {job.specificAddress && (
-                                                <div className="flex items-start justify-between gap-3 text-sm">
+                                                <div className="flex justify-between gap-3 text-sm">
                                                     <span className="text-gray-500 dark:text-gray-400">
                                                         Dirección
                                                     </span>
@@ -1525,7 +1888,7 @@ export default function ClientDashboardPage() {
                                                 </div>
                                             )}
 
-                                            <div className="flex items-center justify-between gap-3 text-sm">
+                                            <div className="flex justify-between gap-3 text-sm">
                                                 <span className="text-gray-500 dark:text-gray-400">
                                                     Publicado el
                                                 </span>
@@ -1535,7 +1898,7 @@ export default function ClientDashboardPage() {
                                             </div>
                                         </div>
 
-                                        {/* SEGUIMIENTO DEL TRABAJO */}
+                                        {/* SEGUIMIENTO */}
                                         <div className="mt-5 rounded-2xl border border-gray-200 p-4 dark:border-gray-800">
                                             <div className="mb-4 flex items-center justify-between gap-2">
                                                 <h4 className="text-sm font-bold text-gray-900 dark:text-white">
@@ -1548,7 +1911,7 @@ export default function ClientDashboardPage() {
 
                                             <div className="mb-3 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
                                                 <div
-                                                    className={`h-full rounded-full transition-all duration-500 ${
+                                                    className={`h-full rounded-full transition-all ${
                                                         job.status === "COMPLETED"
                                                             ? "w-full bg-green-500"
                                                             : "w-2/3 bg-blue-600"
@@ -1561,26 +1924,22 @@ export default function ClientDashboardPage() {
                                                     <span className="mx-auto mb-1 flex h-6 w-6 items-center justify-center rounded-full bg-green-100 text-xs font-bold text-green-700 dark:bg-green-900/50 dark:text-green-300">
                                                         ✓
                                                     </span>
-                                                    <p className="text-[10px] font-medium text-gray-600 dark:text-gray-400">
+                                                    <p className="text-[10px] text-gray-600 dark:text-gray-400">
                                                         Aceptado
                                                     </p>
                                                 </div>
-
                                                 <div>
                                                     <span className={`mx-auto mb-1 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${
                                                         job.status === "IN_PROGRESS" || job.status === "COMPLETED"
                                                             ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
                                                             : "bg-gray-100 text-gray-400 dark:bg-gray-700"
                                                     }`}>
-                                                        {job.status === "IN_PROGRESS" || job.status === "COMPLETED"
-                                                            ? "✓"
-                                                            : "2"}
+                                                        ✓
                                                     </span>
-                                                    <p className="text-[10px] font-medium text-gray-600 dark:text-gray-400">
+                                                    <p className="text-[10px] text-gray-600 dark:text-gray-400">
                                                         En ejecución
                                                     </p>
                                                 </div>
-
                                                 <div>
                                                     <span className={`mx-auto mb-1 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${
                                                         job.status === "COMPLETED"
@@ -1589,14 +1948,14 @@ export default function ClientDashboardPage() {
                                                     }`}>
                                                         {job.status === "COMPLETED" ? "✓" : "3"}
                                                     </span>
-                                                    <p className="text-[10px] font-medium text-gray-600 dark:text-gray-400">
+                                                    <p className="text-[10px] text-gray-600 dark:text-gray-400">
                                                         Finalizado
                                                     </p>
                                                 </div>
                                             </div>
                                         </div>
 
-                                        {/* ACCIÓN SEGÚN ESTADO */}
+                                        {/* ACCIÓN */}
                                         <div className="mt-5">
                                             {job.status === "IN_PROGRESS" ? (
                                                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/50 dark:bg-amber-950/20">
@@ -1606,7 +1965,7 @@ export default function ClientDashboardPage() {
                                                             <p className="text-sm font-bold text-amber-800 dark:text-amber-300">
                                                                 Servicio en desarrollo
                                                             </p>
-                                                            <p className="mt-1 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+                                                            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
                                                                 El técnico todavía está realizando el trabajo. Podrás calificarlo cuando marque el servicio como finalizado.
                                                             </p>
                                                         </div>
@@ -1615,11 +1974,10 @@ export default function ClientDashboardPage() {
                                             ) : (
                                                 <button
                                                     type="button"
-                                                    onClick={() => abrirCalificacion(job)}
-                                                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+                                                    onClick={() => void abrirCalificacion(job)}
+                                                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700"
                                                 >
-                                                    <span>⭐</span>
-                                                    Calificar técnico
+                                                    ⭐ Calificar técnico
                                                 </button>
                                             )}
                                         </div>
@@ -1631,29 +1989,25 @@ export default function ClientDashboardPage() {
                 )}
             </section>
 
-            {/* ========================================= */}
             {/* MODAL: DETALLE DE PUBLICACIÓN */}
-            {/* ========================================= */}
             {ofertaSeleccionada && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4 backdrop-blur-sm transition-all duration-300">
-                    <div className="max-h-[90vh] w-full max-w-lg transform space-y-6 overflow-y-auto rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl transition-all duration-300 dark:border-gray-700 dark:bg-gray-900">
-
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4 backdrop-blur-sm">
+                    <div className="max-h-[90vh] w-full max-w-lg space-y-6 overflow-y-auto rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
                         <div className="flex items-center justify-between border-b border-gray-100 pb-4 dark:border-gray-700">
                             <h3 className="text-lg font-bold text-gray-900 dark:text-white">
                                 Detalles del Requerimiento
                             </h3>
-
                             <button
                                 type="button"
                                 onClick={cerrarModal}
-                                className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-xs font-bold text-gray-500 transition-colors duration-200 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+                                className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-xs text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
                             >
                                 ✕
                             </button>
                         </div>
 
                         {cargandoDetalle ? (
-                            <p role="status" className="text-sm text-gray-500 dark:text-gray-400">
+                            <p role="status" className="text-sm text-gray-500">
                                 Cargando detalle...
                             </p>
                         ) : errorDetalle ? (
@@ -1668,12 +2022,11 @@ export default function ClientDashboardPage() {
                                 </button>
                             </div>
                         ) : detalle && (
-                            <div className="space-y-6 transition-all duration-300">
+                            <div className="space-y-6">
                                 <div>
                                     <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600 dark:bg-blue-950/60 dark:text-blue-300">
                                         {detalle.specialty}
                                     </span>
-
                                     <h4 className="mt-2 text-xl font-bold text-gray-900 dark:text-white">
                                         {detalle.title}
                                     </h4>
@@ -1681,10 +2034,8 @@ export default function ClientDashboardPage() {
 
                                 <div className="space-y-2 rounded-2xl border border-gray-100 bg-gray-50/80 p-4 text-xs dark:border-gray-700 dark:bg-gray-800">
                                     <div className="flex justify-between">
-                                        <span className="text-gray-400 dark:text-gray-500">
-                                            Estado:
-                                        </span>
-                                        <span className="font-bold text-blue-600 dark:text-blue-400">
+                                        <span className="text-gray-400">Estado:</span>
+                                        <span className="font-bold text-blue-600">
                                             {({
                                                 OPEN: "Publicada",
                                                 IN_PROGRESS: "En progreso",
@@ -1693,29 +2044,20 @@ export default function ClientDashboardPage() {
                                             } as Record<string, string>)[detalle.status] ?? detalle.status}
                                         </span>
                                     </div>
-
                                     <div className="flex justify-between gap-4">
-                                        <span className="text-gray-400 dark:text-gray-500">
-                                            Cliente:
-                                        </span>
+                                        <span className="text-gray-400">Cliente:</span>
                                         <span className="text-right font-semibold text-gray-800 dark:text-gray-200">
                                             {detalle.clientName}
                                         </span>
                                     </div>
-
                                     <div className="flex justify-between gap-4">
-                                        <span className="text-gray-400 dark:text-gray-500">
-                                            Profesional asignado:
-                                        </span>
+                                        <span className="text-gray-400">Profesional asignado:</span>
                                         <span className="text-right font-semibold text-gray-800 dark:text-gray-200">
                                             {detalle.technicianName || "Sin asignar"}
                                         </span>
                                     </div>
-
                                     <div className="flex justify-between gap-4">
-                                        <span className="text-gray-400 dark:text-gray-500">
-                                            Ubicación:
-                                        </span>
+                                        <span className="text-gray-400">Ubicación:</span>
                                         <span className="text-right font-semibold text-gray-800 dark:text-gray-200">
                                             {[
                                                 detalle.ubigeoDistrictName,
@@ -1724,20 +2066,14 @@ export default function ClientDashboardPage() {
                                             ].filter(Boolean).join(", ") || "No disponible"}
                                         </span>
                                     </div>
-
                                     <div className="flex justify-between gap-4">
-                                        <span className="text-gray-400 dark:text-gray-500">
-                                            Dirección:
-                                        </span>
+                                        <span className="text-gray-400">Dirección:</span>
                                         <span className="text-right font-semibold text-gray-800 dark:text-gray-200">
                                             {detalle.specificAddress || "No disponible"}
                                         </span>
                                     </div>
-
                                     <div className="flex justify-between gap-4">
-                                        <span className="text-gray-400 dark:text-gray-500">
-                                            Fecha de creación:
-                                        </span>
+                                        <span className="text-gray-400">Fecha de creación:</span>
                                         <span className="font-semibold text-gray-800 dark:text-gray-200">
                                             {new Date(detalle.createdAt).toLocaleString("es-PE")}
                                         </span>
@@ -1745,43 +2081,38 @@ export default function ClientDashboardPage() {
                                 </div>
 
                                 <div className="space-y-1">
-                                    <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                    <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
                                         Descripción
                                     </span>
-
                                     <p className="whitespace-pre-wrap rounded-2xl border border-gray-100 bg-white p-4 text-xs leading-relaxed text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
                                         {detalle.description || "No disponible"}
                                     </p>
                                 </div>
 
-                                <div className="flex gap-3 pt-2">
-                                    <button
-                                        type="button"
-                                        onClick={() => handleEliminar(ofertaSeleccionada.id)}
-                                        disabled={eliminandoId !== null}
-                                        className="w-full rounded-2xl bg-red-50 py-3 text-xs font-bold text-red-600 transition-all duration-300 hover:bg-red-100 disabled:opacity-50 dark:bg-red-950/40 dark:text-red-400 dark:hover:bg-red-950/70"
-                                    >
-                                        {eliminandoId === ofertaSeleccionada.id
-                                            ? "Eliminando..."
-                                            : "Eliminar Requerimiento"}
-                                    </button>
-                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => handleEliminar(ofertaSeleccionada.id)}
+                                    disabled={eliminandoId !== null}
+                                    className="w-full rounded-2xl bg-red-50 py-3 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50 dark:bg-red-950/40 dark:text-red-400"
+                                >
+                                    {eliminandoId === ofertaSeleccionada.id
+                                        ? "Eliminando..."
+                                        : "Eliminar Requerimiento"}
+                                </button>
                             </div>
                         )}
                     </div>
                 </div>
             )}
 
-            {/* ========================================= */}
             {/* MODAL: PROPUESTAS RECIBIDAS */}
-            {/* ========================================= */}
             {mostrarPropuestas && ofertaPropuestas && (
                 <div
-                    className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/60 p-4 backdrop-blur-sm animate-fade-in"
+                    className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/60 p-4 backdrop-blur-sm"
                     onClick={cerrarPropuestas}
                 >
                     <div
-                        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-gray-100 bg-white shadow-2xl animate-scale-up dark:border-gray-700 dark:bg-gray-900"
+                        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-gray-100 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
                         onClick={(e) => e.stopPropagation()}
                     >
                         <div className="flex items-start justify-between border-b border-gray-100 p-6 dark:border-gray-800">
@@ -1789,21 +2120,19 @@ export default function ClientDashboardPage() {
                                 <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-2xl dark:bg-blue-950/60">
                                     💬
                                 </div>
-
                                 <div>
                                     <h3 className="text-lg font-bold text-gray-900 dark:text-white">
                                         Propuestas recibidas
                                     </h3>
                                     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                        Revisa las propuestas para tu solicitud.
+                                        Revisa y compara las cotizaciones de los profesionales.
                                     </p>
                                 </div>
                             </div>
-
                             <button
                                 type="button"
                                 onClick={cerrarPropuestas}
-                                className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-sm text-gray-500 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+                                className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-sm text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
                             >
                                 ✕
                             </button>
@@ -1822,10 +2151,9 @@ export default function ClientDashboardPage() {
                                         {ofertaPropuestas.specialty}
                                     </p>
                                 </div>
-
                                 <div className="rounded-2xl border border-blue-100 bg-white px-5 py-3 text-center dark:border-blue-900 dark:bg-gray-900">
                                     <span className="block text-2xl font-black text-blue-600 dark:text-blue-400">
-                                        {ofertaPropuestas.propuestasCount}
+                                        {propuestasDeOferta.length}
                                     </span>
                                     <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
                                         Propuestas
@@ -1834,51 +2162,180 @@ export default function ClientDashboardPage() {
                             </div>
                         </div>
 
-                        <div className="p-6">
-                            {ofertaPropuestas.propuestasCount === 0 ? (
-                                <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-gray-200 px-6 py-12 text-center dark:border-gray-700">
+                        <div className="space-y-5 p-6">
+                            {errorPropuestas && (
+                                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+                                    {errorPropuestas}
+                                </div>
+                            )}
+
+                            {propuestasDeOferta.length === 0 ? (
+                                <div className="flex flex-col items-center rounded-2xl border border-dashed border-gray-200 px-6 py-12 text-center dark:border-gray-700">
                                     <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gray-100 text-3xl dark:bg-gray-800">
                                         📭
                                     </div>
-
                                     <h4 className="text-base font-bold text-gray-800 dark:text-white">
                                         Todavía no tienes propuestas
                                     </h4>
-
                                     <p className="mt-2 max-w-sm text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                                        Cuando los profesionales revisen tu solicitud y envíen sus cotizaciones, aparecerán aquí.
+                                        Cuando un técnico envíe una propuesta para esta publicación, aparecerá aquí con su cotización y tiempo estimado.
                                     </p>
                                 </div>
                             ) : (
-                                <div className="space-y-4">
-                                    <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-5 dark:border-blue-900/50 dark:bg-blue-950/20">
-                                        <div className="flex items-start gap-3">
-                                            <span className="text-xl">📨</span>
-                                            <div>
-                                                <h4 className="text-sm font-bold text-blue-800 dark:text-blue-300">
-                                                    Tienes {ofertaPropuestas.propuestasCount} propuestas recibidas
-                                                </h4>
-                                                <p className="mt-1 text-xs leading-relaxed text-blue-700/80 dark:text-blue-300/70">
-                                                    Para mostrar las cotizaciones completas y permitir que aceptes una propuesta, todavía falta conectar el servicio de propuestas del backend.
-                                                </p>
+                                <>
+                                    {propuestaAceptada && (
+                                        <div className="rounded-2xl border border-green-200 bg-green-50 p-4 dark:border-green-900/50 dark:bg-green-950/20">
+                                            <div className="flex items-start gap-3">
+                                                <span className="text-xl">✓</span>
+                                                <div>
+                                                    <h4 className="text-sm font-bold text-green-800 dark:text-green-300">
+                                                        Ya aceptaste una propuesta
+                                                    </h4>
+                                                    <p className="mt-1 text-xs leading-relaxed text-green-700 dark:text-green-400">
+                                                        La propuesta quedó aceptada en este navegador. El técnico puede verla en su panel y el trabajo aparecerá en tu pestaña de Trabajos aceptados. El servidor todavía no registra la asignación.
+                                                    </p>
+                                                </div>
                                             </div>
                                         </div>
+                                    )}
+
+                                    <div className="space-y-4">
+                                        {propuestasDeOferta
+                                            .slice()
+                                            .sort(
+                                                (a, b) =>
+                                                    new Date(b.createdAt).getTime() -
+                                                    new Date(a.createdAt).getTime()
+                                            )
+                                            .map((proposal) => (
+                                                <article
+                                                    key={proposal.id}
+                                                    className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900"
+                                                >
+                                                    <div className="flex flex-wrap items-start justify-between gap-3">
+                                                        <div>
+                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
+                                                                    {proposal.specialty || ofertaPropuestas.specialty}
+                                                                </span>
+                                                                {proposal.status === "PENDING" ? (
+                                                                    <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                                                                        Pendiente
+                                                                    </span>
+                                                                ) : proposal.status === "ACCEPTED" ? (
+                                                                    <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/40 dark:text-green-300">
+                                                                        Aceptada
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">
+                                                                        Rechazada
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <p className="mt-3 text-xs font-semibold text-gray-500 dark:text-gray-400">
+                                                                Técnico ID: {proposal.technicianId}
+                                                            </p>
+                                                            <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+                                                                Enviada el {formatDate(proposal.createdAt)}
+                                                            </p>
+                                                        </div>
+
+                                                        <div className="rounded-xl bg-blue-50 px-4 py-3 text-right dark:bg-blue-950/40">
+                                                            <span className="block text-[10px] font-semibold uppercase tracking-wider text-blue-500 dark:text-blue-400">
+                                                                Cotización
+                                                            </span>
+                                                            <span className="mt-1 block text-xl font-extrabold text-blue-700 dark:text-blue-300">
+                                                                {formatAmount(proposal.amount)}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                                                        <div className="rounded-xl bg-gray-50 p-3 dark:bg-gray-800">
+                                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                                                                Tiempo estimado
+                                                            </p>
+                                                            <p className="mt-1 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                                                                {proposal.estimatedTime}
+                                                            </p>
+                                                        </div>
+                                                        <div className="rounded-xl bg-gray-50 p-3 dark:bg-gray-800">
+                                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+                                                                Distrito
+                                                            </p>
+                                                            <p className="mt-1 text-sm font-semibold text-gray-800 dark:text-gray-200">
+                                                                {proposal.districtName || "No especificado"}
+                                                            </p>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="mt-4">
+                                                        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                                                            Detalles de la propuesta
+                                                        </p>
+                                                        <p className="whitespace-pre-wrap rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm leading-relaxed text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                                                            {proposal.description}
+                                                        </p>
+                                                    </div>
+
+                                                    {proposal.status === "PENDING" && (
+                                                        <div className="mt-5 flex flex-col gap-3 border-t border-gray-100 pt-4 dark:border-gray-700 sm:flex-row">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                    cambiarEstadoPropuesta(
+                                                                        proposal.id,
+                                                                        "REJECTED"
+                                                                    )
+                                                                }
+                                                                disabled={procesandoPropuesta !== null || !!propuestaAceptada}
+                                                                className="flex-1 rounded-xl border border-red-200 bg-white px-4 py-3 text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:bg-gray-900 dark:text-red-400 dark:hover:bg-red-950/30"
+                                                            >
+                                                                {procesandoPropuesta === proposal.id
+                                                                    ? "Procesando..."
+                                                                    : "Rechazar propuesta"}
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() =>
+                                                                    cambiarEstadoPropuesta(
+                                                                        proposal.id,
+                                                                        "ACCEPTED"
+                                                                    )
+                                                                }
+                                                                disabled={procesandoPropuesta !== null || !!propuestaAceptada}
+                                                                className="flex-1 rounded-xl bg-blue-600 px-4 py-3 text-xs font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                                            >
+                                                                {procesandoPropuesta === proposal.id
+                                                                    ? "Procesando..."
+                                                                    : "✓ Aceptar propuesta"}
+                                                            </button>
+                                                        </div>
+                                                    )}
+                                                </article>
+                                            ))}
                                     </div>
 
-                                    <div className="rounded-2xl border border-gray-200 bg-gray-50 p-5 dark:border-gray-700 dark:bg-gray-800">
-                                        <p className="text-xs leading-relaxed text-gray-600 dark:text-gray-300">
-                                            Una vez conectado ese servicio, al aceptar una propuesta la publicación deberá pasar a estado <strong>IN_PROGRESS</strong>. Automáticamente aparecerá en la pestaña de trabajos aceptados.
+                                    {propuestasPendientes.length > 0 && !propuestaAceptada && (
+                                        <p className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-xs leading-relaxed text-blue-700 dark:border-blue-900/50 dark:bg-blue-950/20 dark:text-blue-300">
+                                            Puedes aceptar una propuesta. Al hacerlo, las demás propuestas pendientes de esta publicación quedarán rechazadas en el almacenamiento local.
                                         </p>
-                                    </div>
-                                </div>
+                                    )}
+                                </>
                             )}
+
+                            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/50 dark:bg-amber-950/20">
+                                <p className="text-xs leading-relaxed text-amber-800 dark:text-amber-300">
+                                    <strong>Importante:</strong> las propuestas y sus estados se guardan en el almacenamiento local de este navegador. El técnico puede visualizar la propuesta aceptada desde el mismo navegador, pero la asignación y el cambio de estado del trabajo en el servidor todavía no se realizan.
+                                </p>
+                            </div>
                         </div>
 
                         <div className="flex justify-end border-t border-gray-100 p-6 dark:border-gray-800">
                             <button
                                 type="button"
                                 onClick={cerrarPropuestas}
-                                className="rounded-xl bg-gray-100 px-6 py-3 text-xs font-bold text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                                className="rounded-xl bg-gray-100 px-6 py-3 text-xs font-bold text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200"
                             >
                                 Cerrar
                             </button>
@@ -1887,9 +2344,7 @@ export default function ClientDashboardPage() {
                 </div>
             )}
 
-            {/* ========================================= */}
             {/* MODAL: CALIFICAR TÉCNICO */}
-            {/* ========================================= */}
             {trabajoCalificar && (
                 <div
                     className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
@@ -1902,27 +2357,25 @@ export default function ClientDashboardPage() {
                         {/* CABECERA */}
                         <div className="relative overflow-hidden rounded-t-3xl bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 px-6 py-7 text-white">
                             <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.18),transparent_50%)]" />
-
                             <div className="relative flex items-start justify-between gap-4">
                                 <div>
                                     <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-blue-100">
-                                        Finalización del servicio
+                                        {existingReview ? "Calificación registrada" : "Finalización del servicio"}
                                     </span>
-
                                     <h2 className="text-2xl font-extrabold">
-                                        Califica al técnico
+                                        {existingReview ? "Tu calificación" : "Califica al técnico"}
                                     </h2>
-
                                     <p className="mt-2 text-sm leading-relaxed text-blue-100">
-                                        El servicio fue marcado como finalizado. Comparte tu experiencia con el profesional.
+                                        {existingReview
+                                            ? "Ya registraste tu opinión sobre este profesional. Puedes consultar la calificación, pero no modificarla."
+                                            : "El servicio fue marcado como finalizado. Comparte tu experiencia con el profesional."}
                                     </p>
                                 </div>
-
                                 <button
                                     type="button"
                                     onClick={cerrarCalificacion}
-                                    disabled={ratingSubmitting}
-                                    className="rounded-xl border border-white/20 bg-white/10 p-2 text-white transition hover:bg-white/20 disabled:opacity-50"
+                                    disabled={ratingSubmitting || ratingLoading}
+                                    className="rounded-xl border border-white/20 bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-50"
                                     aria-label="Cerrar calificación"
                                 >
                                     ✕
@@ -1931,107 +2384,136 @@ export default function ClientDashboardPage() {
                         </div>
 
                         <form onSubmit={handleRatingSubmit} className="space-y-6 p-6">
-
                             {/* RESUMEN DEL TRABAJO */}
                             <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-800/60">
                                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
                                     Trabajo finalizado
                                 </p>
-
                                 <h3 className="mt-1 text-lg font-bold text-gray-900 dark:text-white">
                                     {trabajoCalificar.title}
                                 </h3>
-
                                 <div className="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300">
-                                    <p>
-                                        <strong>Técnico:</strong> {trabajoCalificar.technicianName}
-                                    </p>
-                                    <p>
-                                        <strong>Especialidad:</strong> {trabajoCalificar.specialty}
-                                    </p>
-                                    <p>
-                                        <strong>Distrito:</strong> {trabajoCalificar.districtName}
-                                    </p>
+                                    <p><strong>Técnico:</strong> {trabajoCalificar.technicianName}</p>
+                                    <p><strong>Especialidad:</strong> {trabajoCalificar.specialty}</p>
+                                    <p><strong>Distrito:</strong> {trabajoCalificar.districtName}</p>
                                 </div>
                             </div>
 
-                            {/* ESTRELLAS */}
-                            <div className="text-center">
-                                <h3 className="text-base font-bold text-gray-900 dark:text-white">
-                                    ¿Cómo fue tu experiencia con el técnico?
-                                </h3>
+                            {/* CARGANDO CALIFICACIÓN */}
+                            {ratingLoading ? (
+                                <div className="rounded-xl border border-blue-200 bg-blue-50 p-5 text-center dark:border-blue-900 dark:bg-blue-950/30">
+                                    <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">
+                                        Consultando calificación anterior...
+                                    </p>
+                                    <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">
+                                        Estamos verificando si ya calificaste este trabajo.
+                                    </p>
+                                </div>
+                            ) : (
+                                <>
+                                    {/* ESTRELLAS */}
+                                    <div className="text-center">
+                                        <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                                            ¿Cómo fue tu experiencia con el técnico?
+                                        </h3>
+                                        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                                            {existingReview
+                                                ? "Esta es la calificación que registraste."
+                                                : "Selecciona una calificación de 1 a 5 estrellas."}
+                                        </p>
 
-                                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                                    Selecciona una calificación de 1 a 5 estrellas.
-                                </p>
+                                        <div className="mt-5 flex justify-center gap-2">
+                                            {[1, 2, 3, 4, 5].map((star) => (
+                                                <button
+                                                    key={star}
+                                                    type="button"
+                                                    disabled={!!existingReview || ratingSubmitting}
+                                                    onClick={() =>
+                                                        setRatingForm((prev) => ({
+                                                            ...prev,
+                                                            rating: star,
+                                                        }))
+                                                    }
+                                                    className={`text-4xl transition ${
+                                                        existingReview
+                                                            ? "cursor-default"
+                                                            : "hover:scale-110"
+                                                    } ${
+                                                        ratingForm.rating >= star
+                                                            ? "text-amber-400"
+                                                            : "text-gray-300 dark:text-gray-600"
+                                                    }`}
+                                                    aria-label={`${star} estrellas`}
+                                                >
+                                                    ★
+                                                </button>
+                                            ))}
+                                        </div>
 
-                                <div className="mt-5 flex justify-center gap-2">
-                                    {[1, 2, 3, 4, 5].map((star) => (
-                                        <button
-                                            key={star}
-                                            type="button"
-                                            onClick={() =>
+                                        <p className="mt-3 text-sm font-semibold text-gray-700 dark:text-gray-200">
+                                            {ratingForm.rating === 1 && "Muy mala experiencia"}
+                                            {ratingForm.rating === 2 && "Mala experiencia"}
+                                            {ratingForm.rating === 3 && "Experiencia regular"}
+                                            {ratingForm.rating === 4 && "Buena experiencia"}
+                                            {ratingForm.rating === 5 && "Excelente experiencia"}
+                                            {ratingForm.rating === 0 && "Aún no has seleccionado una calificación"}
+                                        </p>
+                                    </div>
+
+                                    {/* COMENTARIO */}
+                                    <div>
+                                        <div className="mb-2 flex items-center justify-between gap-3">
+                                            <label className="text-sm font-semibold text-gray-900 dark:text-white">
+                                                Comentario sobre el técnico
+                                            </label>
+                                            <span className="text-xs text-gray-400">
+                                                {ratingForm.comment.length}/1000
+                                            </span>
+                                        </div>
+                                        <textarea
+                                            rows={4}
+                                            maxLength={1000}
+                                            value={ratingForm.comment}
+                                            disabled={!!existingReview || ratingSubmitting}
+                                            onChange={(e) =>
                                                 setRatingForm((prev) => ({
                                                     ...prev,
-                                                    rating: star,
+                                                    comment: e.target.value,
                                                 }))
                                             }
-                                            className={`text-4xl transition hover:scale-110 ${
-                                                ratingForm.rating >= star
-                                                    ? "text-amber-400"
-                                                    : "text-gray-300 dark:text-gray-600"
-                                            }`}
-                                            aria-label={`Calificar con ${star} estrellas`}
-                                        >
-                                            ★
-                                        </button>
-                                    ))}
-                                </div>
-
-                                <p className="mt-3 text-sm font-semibold text-gray-700 dark:text-gray-200">
-                                    {ratingForm.rating === 1 && "Muy mala experiencia"}
-                                    {ratingForm.rating === 2 && "Mala experiencia"}
-                                    {ratingForm.rating === 3 && "Experiencia regular"}
-                                    {ratingForm.rating === 4 && "Buena experiencia"}
-                                    {ratingForm.rating === 5 && "Excelente experiencia"}
-                                    {ratingForm.rating === 0 && "Aún no has seleccionado una calificación"}
-                                </p>
-                            </div>
-
-                            {/* COMENTARIO */}
-                            <div>
-                                <div className="mb-2 flex items-center justify-between gap-3">
-                                    <label className="text-sm font-semibold text-gray-900 dark:text-white">
-                                        Comentario sobre el técnico
-                                    </label>
-
-                                    <span className="text-xs text-gray-400">
-                                        {ratingForm.comment.length}/500
-                                    </span>
-                                </div>
-
-                                <textarea
-                                    rows={4}
-                                    maxLength={500}
-                                    value={ratingForm.comment}
-                                    onChange={(e) =>
-                                        setRatingForm((prev) => ({
-                                            ...prev,
-                                            comment: e.target.value,
-                                        }))
-                                    }
-                                    placeholder="Cuéntanos cómo fue el servicio, la puntualidad, la comunicación y el resultado del trabajo. (Opcional)"
-                                    className={`${inputClass} resize-none`}
-                                />
-                            </div>
+                                            placeholder="Cuéntanos cómo fue el servicio, la puntualidad, la comunicación y el resultado del trabajo. (Opcional)"
+                                            className={`${inputClass} resize-none disabled:cursor-not-allowed disabled:opacity-70`}
+                                        />
+                                        {existingReview && (
+                                            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                                El comentario está bloqueado porque la calificación ya fue registrada.
+                                            </p>
+                                        )}
+                                    </div>
+                                </>
+                            )}
 
                             {/* AVISO */}
-                            <div className="flex gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 dark:border-blue-900/60 dark:bg-blue-950/30">
-                                <span className="text-lg">ℹ️</span>
-                                <p className="text-xs leading-relaxed text-blue-800 dark:text-blue-300">
-                                    Tu calificación se podrá guardar cuando esté conectado el servicio de calificaciones del backend.
-                                </p>
-                            </div>
+                            {!ratingLoading && (
+                                <div className={`flex gap-3 rounded-xl border p-4 ${
+                                    existingReview
+                                        ? "border-green-200 bg-green-50 dark:border-green-900/60 dark:bg-green-950/30"
+                                        : "border-blue-200 bg-blue-50 dark:border-blue-900/60 dark:bg-blue-950/30"
+                                }`}>
+                                    <span className="text-lg">
+                                        {existingReview ? "✓" : "ℹ️"}
+                                    </span>
+                                    <p className={`text-xs leading-relaxed ${
+                                        existingReview
+                                            ? "text-green-800 dark:text-green-300"
+                                            : "text-blue-800 dark:text-blue-300"
+                                    }`}>
+                                        {existingReview
+                                            ? "Esta calificación ya está guardada. No es posible editarla ni enviar otra calificación para el mismo trabajo."
+                                            : "Tu calificación se enviará al servidor y quedará asociada a este trabajo. Solo podrás registrarla una vez. La finalización local no modifica el estado del trabajo en el backend."}
+                                    </p>
+                                </div>
+                            )}
 
                             {ratingError && (
                                 <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
@@ -2040,29 +2522,39 @@ export default function ClientDashboardPage() {
                             )}
 
                             {ratingFeedback && (
-                                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
+                                <div className="rounded-xl border border-green-200 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">
                                     {ratingFeedback}
                                 </div>
                             )}
 
                             {/* BOTONES */}
-                            <div className="flex flex-col-reverse gap-3 border-t border-gray-100 pt-5 sm:flex-row sm:justify-end dark:border-gray-800">
+                            <div className="flex flex-col-reverse gap-3 border-t border-gray-100 pt-5 dark:border-gray-800 sm:flex-row sm:justify-end">
                                 <button
                                     type="button"
                                     onClick={cerrarCalificacion}
-                                    disabled={ratingSubmitting}
-                                    className="rounded-xl border border-gray-300 px-5 py-3 text-sm font-semibold transition hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-800"
+                                    disabled={ratingSubmitting || ratingLoading}
+                                    className="rounded-xl border border-gray-300 px-5 py-3 text-sm font-semibold hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-800"
                                 >
                                     Cerrar
                                 </button>
 
-                                <button
-                                    type="submit"
-                                    disabled={ratingSubmitting}
-                                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-                                >
-                                    {ratingSubmitting ? "Procesando..." : "Enviar calificación"}
-                                </button>
+                                {!existingReview && (
+                                    <button
+                                        type="submit"
+                                        disabled={ratingSubmitting || ratingLoading}
+                                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        {ratingSubmitting
+                                            ? "Registrando..."
+                                            : "Enviar calificación"}
+                                    </button>
+                                )}
+
+                                {existingReview && (
+                                    <span className="inline-flex items-center justify-center gap-2 rounded-xl bg-green-100 px-6 py-3 text-sm font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
+                                        ✓ Calificación registrada
+                                    </span>
+                                )}
                             </div>
                         </form>
                     </div>

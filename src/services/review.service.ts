@@ -10,6 +10,7 @@ export interface PageResponse<T> {
 }
 
 export interface ClientReviewRequest {
+    technicianId: string;
     rating: number;
     comment?: string | null;
 }
