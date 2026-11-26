@@ -2,6 +2,7 @@
 "use client";
 
 import { useState } from "react";
+import { isAxiosError } from "axios";
 import { useForm } from "react-hook-form";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -41,9 +42,9 @@ export default function LoginPage() {
         router.push("/dashboard/technician");
       }
 
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      if (error.response?.status === 401) {
+      if (isAxiosError(error) && error.response?.status === 401) {
         setErrorMessage("Correo o contraseña incorrectos.");
       } else {
         setErrorMessage("Ocurrió un error al intentar iniciar sesión. Intenta de nuevo.");

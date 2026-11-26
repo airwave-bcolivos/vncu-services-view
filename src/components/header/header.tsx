@@ -45,6 +45,7 @@ export default function Header() {
     const logout = () => {
         localStorage.removeItem("vncu_token");
         localStorage.removeItem("vncu_role");
+        localStorage.removeItem("vncu_user_id");
         setRole(null);
         closeMenu();
         window.dispatchEvent(new Event("auth-change"));

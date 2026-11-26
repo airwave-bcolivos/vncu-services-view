@@ -2,29 +2,15 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { isAxiosError } from "axios";
 import Header from "@/components/header/header";
-import { jobService, JobSummary, JobDetail } from "@/services/job.service";
+import { useCompletedJobSync } from "@/components/jobs/useCompletedJobSync";
+import { reviewService, type ClientReviewResponse } from "@/services/review.service";
+import { jobErrorMessage, jobService, JobSummary, JobDetail, JobPage, PendingDiagnosticJob } from "@/services/job.service";
 
 type ProposalForm = {
     amount: string;
-    estimatedTime: string;
     description: string;
-};
-
-type ProposalJob = JobSummary | JobDetail;
-
-type LocalProposal = {
-    id: string;
-    jobId: string;
-    technicianId: string;
-    jobTitle: string;
-    specialty: string;
-    districtName: string;
-    amount: number;
-    estimatedTime: string;
-    description: string;
-    createdAt: string;
-    status: "PENDING" | "ACCEPTED" | "REJECTED";
 };
 
 type AcceptedJob = {
@@ -33,13 +19,23 @@ type AcceptedJob = {
     specialty: string;
     description: string;
     clientName: string;
+    clientPhone: string | null;
+    clientEmail: string | null;
     districtName: string;
     specificAddress?: string;
-    acceptedAt: string;
-    amount: number;
-    estimatedTime: string;
+    createdAt: string;
     status: "PENDING" | "COMPLETED";
 };
+
+type TrackedJob = AcceptedJob | (PendingDiagnosticJob & { status: "AWAITING_ACCEPTANCE" });
+
+async function loadJobPages<T>(fetchPage: (page: number) => Promise<JobPage<T>>): Promise<T[]> {
+    const first = await fetchPage(0);
+    const remaining = await Promise.all(
+        Array.from({ length: Math.max(0, first.totalPages - 1) }, (_, index) => fetchPage(index + 1))
+    );
+    return [first, ...remaining].flatMap((page) => page.content);
+}
 
 type RatingForm = {
     rating: number;
@@ -48,28 +44,8 @@ type RatingForm = {
 
 type DashboardTab = "AVAILABLE" | "ACCEPTED";
 
-type LocalJobStatus = {
-    jobId: string;
-    technicianId: string;
-    status: "COMPLETED";
-};
-
-type LocalReviewEdit = {
-    id: string;
-    jobId: string;
-    technicianId: string;
-    rating: number;
-    comment: string;
-    updatedAt: string;
-};
-
-const PROPOSALS_STORAGE_KEY = "vncu_proposals";
-const JOB_STATUS_STORAGE_KEY = "vncu_job_statuses";
-const REVIEW_EDITS_STORAGE_KEY = "vncu_client_review_edits";
-
 const initialProposal: ProposalForm = {
     amount: "",
-    estimatedTime: "",
     description: "",
 };
 
@@ -85,14 +61,14 @@ export default function TechnicianDashboard() {
     const [detailLoading, setDetailLoading] = useState(false);
     const [error, setError] = useState("");
 
-    const [acceptedJobs, setAcceptedJobs] = useState<AcceptedJob[]>([]);
+    const [acceptedJobs, setAcceptedJobs] = useState<TrackedJob[]>([]);
     const [acceptedLoading, setAcceptedLoading] = useState(false);
     const [acceptedError, setAcceptedError] = useState("");
+    const [completingJobId, setCompletingJobId] = useState<string | null>(null);
 
     const [activeTab, setActiveTab] = useState<DashboardTab>("AVAILABLE");
 
-    const [localProposals, setLocalProposals] = useState<LocalProposal[]>([]);
-    const [proposalJob, setProposalJob] = useState<ProposalJob | null>(null);
+    const [proposalJob, setProposalJob] = useState<JobDetail | null>(null);
     const [proposalForm, setProposalForm] = useState<ProposalForm>(initialProposal);
     const [proposalFeedback, setProposalFeedback] = useState("");
     const [proposalError, setProposalError] = useState("");
@@ -104,9 +80,7 @@ export default function TechnicianDashboard() {
     const [ratingFeedback, setRatingFeedback] = useState("");
     const [ratingSubmitting, setRatingSubmitting] = useState(false);
     const [ratingLoading, setRatingLoading] = useState(false);
-    const [existingReview, setExistingReview] = useState<LocalReviewEdit | null>(null);
-    const [editingReview, setEditingReview] = useState(false);
-    const [hasLocalReviewEdit, setHasLocalReviewEdit] = useState(false);
+    const [existingReview, setExistingReview] = useState<ClientReviewResponse | null>(null);
 
     const [search, setSearch] = useState("");
     const [specialty, setSpecialty] = useState("");
@@ -129,59 +103,6 @@ export default function TechnicianDashboard() {
             ? localStorage.getItem("vncu_user_id")
             : null;
 
-    const getLocalJobStatuses = (): LocalJobStatus[] => {
-        try {
-            const stored = localStorage.getItem(JOB_STATUS_STORAGE_KEY);
-            const parsed = stored ? JSON.parse(stored) : [];
-            return Array.isArray(parsed) ? parsed : [];
-        } catch {
-            return [];
-        }
-    };
-
-    const getLocalReviewEdits = (): LocalReviewEdit[] => {
-        try {
-            const stored = localStorage.getItem(REVIEW_EDITS_STORAGE_KEY);
-            const parsed = stored ? JSON.parse(stored) : [];
-            return Array.isArray(parsed) ? parsed : [];
-        } catch {
-            return [];
-        }
-    };
-
-    const loadLocalProposals = useCallback(() => {
-        try {
-            const technicianId = getTechnicianId();
-
-            if (!technicianId) {
-                setLocalProposals([]);
-                return;
-            }
-
-            const stored = localStorage.getItem(PROPOSALS_STORAGE_KEY);
-            const parsed = stored ? JSON.parse(stored) : [];
-
-            if (!Array.isArray(parsed)) {
-                setLocalProposals([]);
-                return;
-            }
-
-            setLocalProposals(
-                parsed.filter(
-                    (proposal: LocalProposal) =>
-                        proposal.technicianId === technicianId
-                )
-            );
-        } catch (err) {
-            console.error("Error al cargar propuestas locales:", err);
-            setLocalProposals([]);
-        }
-    }, []);
-
-    useEffect(() => {
-        loadLocalProposals();
-    }, [loadLocalProposals]);
-
     const loadJobs = useCallback(async (signal?: AbortSignal) => {
         try {
             setLoading(true);
@@ -191,6 +112,7 @@ export default function TechnicianDashboard() {
                 {
                     specialty: specialty || undefined,
                     districtId: districtId || undefined,
+                    minRating: minRating ? Number(minRating) : undefined,
                     page,
                     size,
                 },
@@ -242,7 +164,7 @@ export default function TechnicianDashboard() {
         } finally {
             if (!signal?.aborted) setLoading(false);
         }
-    }, [specialty, districtId, page]);
+    }, [specialty, districtId, minRating, page]);
 
     useEffect(() => {
         const controller = new AbortController();
@@ -257,88 +179,45 @@ export default function TechnicianDashboard() {
             setAcceptedError("");
 
             const technicianId = getTechnicianId();
-
             if (!technicianId) {
                 setAcceptedJobs([]);
                 setAcceptedError("No se encontró la sesión del técnico.");
                 return;
             }
 
-            const stored = localStorage.getItem(PROPOSALS_STORAGE_KEY);
-            const allProposals: LocalProposal[] = stored
-                ? JSON.parse(stored)
-                : [];
-
-            if (!Array.isArray(allProposals)) {
-                setAcceptedJobs([]);
-                return;
-            }
-
-            const acceptedProposals = allProposals.filter(
-                (proposal) =>
-                    proposal.technicianId === technicianId &&
-                    proposal.status === "ACCEPTED"
+            const pending = await loadJobPages(jobService.getPendingDiagnosticJobs);
+            const assigned = await loadJobPages((page) => jobService.getAssignedJobs(technicianId, page));
+            const assignments = new Map(assigned.map((job) => [job.id, job]));
+            const assignedJobs = Array.from(assignments.values()).filter(
+                (job) => job.status === "IN_PROGRESS" || job.status === "COMPLETED"
             );
 
-            const localStatuses = getLocalJobStatuses();
-
             const loadedJobs = await Promise.all(
-                acceptedProposals.map(async (proposal): Promise<AcceptedJob> => {
-                    let detail: JobDetail | null = null;
-
-                    try {
-                        detail = await jobService.getJobDetail(
-                            proposal.jobId,
-                            technicianId
-                        );
-
-                        console.log("VERIFICACIÓN DEL TRABAJO:", {
-                            jobId: proposal.jobId,
-                            technicianIdLocal: technicianId,
-                            technicianIdBackend: detail.technicianId,
-                            jobStatusBackend: detail.status,
-                            clientIdBackend: detail.clientId,
-                        });
-                    } catch (err) {
-                        console.warn(
-                            `No se pudo obtener el detalle del trabajo ${proposal.jobId}. Se utilizarán los datos locales.`,
-                            err
-                        );
-                    }
-
-                    const locallyCompleted = localStatuses.some(
-                        (item) =>
-                            item.jobId === proposal.jobId &&
-                            item.technicianId === technicianId &&
-                            item.status === "COMPLETED"
-                    );
-
+                assignedJobs.map(async (job): Promise<AcceptedJob> => {
+                    const detail = await jobService.getJobDetail(job.id);
                     return {
-                        id: proposal.jobId,
-                        title: detail?.title || proposal.jobTitle,
-                        specialty: detail?.specialty || proposal.specialty,
-                        description: detail?.description || proposal.description,
-                        clientName: detail?.clientName || "Cliente",
-                        districtName:
-                            detail?.ubigeoDistrictName ||
-                            proposal.districtName ||
-                            "No especificado",
-                        specificAddress: detail?.specificAddress || undefined,
-                        acceptedAt: proposal.createdAt,
-                        amount: proposal.amount,
-                        estimatedTime: proposal.estimatedTime,
-                        status:
-                            detail?.status === "COMPLETED" || locallyCompleted
-                                ? "COMPLETED"
-                                : "PENDING",
+                        id: job.id,
+                        title: detail.title,
+                        specialty: detail.specialty,
+                        description: detail.description,
+                        clientName: detail.clientName ?? "Cliente",
+                        clientPhone: detail.clientPhone,
+                        clientEmail: detail.clientEmail,
+                        districtName: detail.ubigeoDistrictName || "No especificado",
+                        specificAddress: detail.specificAddress ?? undefined,
+                        createdAt: detail.createdAt,
+                        status: detail.status === "COMPLETED" ? "COMPLETED" : "PENDING",
                     };
                 })
             );
 
-            setAcceptedJobs(loadedJobs);
+            const trackedJobs = new Map<string, TrackedJob>();
+            pending.forEach((job) => trackedJobs.set(job.id, { ...job, status: "AWAITING_ACCEPTANCE" }));
+            loadedJobs.forEach((job) => trackedJobs.set(job.id, job));
+            setAcceptedJobs(Array.from(trackedJobs.values()));
         } catch (err) {
             console.error("Error al cargar trabajos aceptados:", err);
-            setAcceptedError("No se pudieron cargar tus trabajos aceptados.");
+            setAcceptedError(jobErrorMessage(err, "No se pudieron cargar tus trabajos y ofertas."));
         } finally {
             setAcceptedLoading(false);
         }
@@ -346,79 +225,37 @@ export default function TechnicianDashboard() {
 
     useEffect(() => {
         if (activeTab === "ACCEPTED") {
-            loadAcceptedJobs();
+            void loadAcceptedJobs();
         }
     }, [activeTab, loadAcceptedJobs]);
 
-    useEffect(() => {
-        const handleStorageChange = (event: StorageEvent) => {
-            if (
-                event.key === PROPOSALS_STORAGE_KEY ||
-                event.key === JOB_STATUS_STORAGE_KEY ||
-                event.key === REVIEW_EDITS_STORAGE_KEY
-            ) {
-                loadLocalProposals();
+    const inProgressIds = useMemo(() => activeTab === "ACCEPTED"
+        ? acceptedJobs.filter((job) => job.status === "PENDING").map((job) => job.id)
+        : [], [activeTab, acceptedJobs]);
 
-                if (activeTab === "ACCEPTED") {
-                    loadAcceptedJobs();
-                }
-            }
-        };
+    const markCompleted = useCallback((ids: ReadonlySet<string>) => {
+        setAcceptedJobs((jobs) => jobs.map((job) =>
+            job.status === "PENDING" && ids.has(job.id) ? { ...job, status: "COMPLETED" } : job
+        ));
+    }, []);
 
-        window.addEventListener("storage", handleStorageChange);
-        return () => window.removeEventListener("storage", handleStorageChange);
-    }, [activeTab, loadAcceptedJobs, loadLocalProposals]);
+    useCompletedJobSync(inProgressIds, markCompleted);
 
-    // FINALIZAR TRABAJO LOCALMENTE
-    const handleCompleteJob = (job: AcceptedJob) => {
-        const technicianId = getTechnicianId();
+    async function handleCompleteJob(job: AcceptedJob) {
+        if (completingJobId || !window.confirm("¿Confirmas que el trabajo ha finalizado?")) return;
 
-        if (!technicianId) {
-            setAcceptedError("No se encontró la sesión del técnico.");
-            return;
-        }
-
-        if (job.status === "COMPLETED") return;
-
+        setCompletingJobId(job.id);
+        setAcceptedError("");
         try {
-            const statuses = getLocalJobStatuses();
-
-            const updatedStatuses = [
-                ...statuses.filter(
-                    (item) =>
-                        !(
-                            item.jobId === job.id &&
-                            item.technicianId === technicianId
-                        )
-                ),
-                {
-                    jobId: job.id,
-                    technicianId,
-                    status: "COMPLETED" as const,
-                },
-            ];
-
-            localStorage.setItem(
-                JOB_STATUS_STORAGE_KEY,
-                JSON.stringify(updatedStatuses)
-            );
-
-            setAcceptedJobs((previous) =>
-                previous.map((item) =>
-                    item.id === job.id
-                        ? { ...item, status: "COMPLETED" }
-                        : item
-                )
-            );
-
-            setAcceptedError("");
-        } catch (err) {
-            console.error("Error al finalizar el trabajo:", err);
-            setAcceptedError(
-                "No se pudo guardar el estado del trabajo en este navegador."
-            );
+            await jobService.completeJob(job.id);
+            markCompleted(new Set([job.id]));
+            void openRating({ ...job, status: "COMPLETED" });
+        } catch (error) {
+            setAcceptedError(jobErrorMessage(error, "No se pudo finalizar el trabajo.", "El trabajo ya no está en progreso."));
+        } finally {
+            setCompletingJobId(null);
         }
-    };
+    }
 
     const filteredJobs = useMemo(() => {
         const value = search.toLowerCase().trim();
@@ -452,8 +289,10 @@ export default function TechnicianDashboard() {
             (job) =>
                 job.title.toLowerCase().includes(value) ||
                 job.specialty.toLowerCase().includes(value) ||
-                job.clientName.toLowerCase().includes(value) ||
-                job.districtName.toLowerCase().includes(value)
+                (job.status !== "AWAITING_ACCEPTANCE" && (
+                    job.clientName.toLowerCase().includes(value) ||
+                    job.districtName.toLowerCase().includes(value)
+                ))
         );
     }, [acceptedJobs, search]);
 
@@ -477,46 +316,21 @@ export default function TechnicianDashboard() {
             year: "numeric",
         });
 
-    const hasProposalForJob = (jobId: string) =>
-        localProposals.some(
-            (proposal) =>
-                proposal.jobId === jobId &&
-                proposal.status !== "REJECTED"
-        );
-
     const openJobDetail = async (id: string) => {
         try {
-            const viewerId = getTechnicianId();
-
-            if (!viewerId) {
-                setError("No se encontró la sesión del técnico.");
-                return;
-            }
-
             setDetailLoading(true);
             setSelectedJob(null);
-
-            const detail = await jobService.getJobDetail(id, viewerId);
-            setSelectedJob(detail);
+            setSelectedJob(await jobService.getJobDetail(id));
         } catch (err) {
             console.error("Error al consultar el trabajo:", err);
-            setError("No se pudieron cargar los detalles del trabajo.");
+            setError(jobErrorMessage(err, "No se pudieron cargar los detalles del trabajo."));
         } finally {
             setDetailLoading(false);
         }
     };
 
-    const openProposal = (job: ProposalJob) => {
-        if (hasProposalForJob(job.id)) {
-            setProposalJob(job);
-            setProposalForm(initialProposal);
-            setProposalError("");
-            setProposalFeedback(
-                "Ya enviaste una propuesta para este trabajo. Puedes consultar la información guardada en este navegador."
-            );
-            setSelectedJob(null);
-            return;
-        }
+    const openProposal = (job: JobDetail) => {
+        if (job.status !== "OPEN" || job.diagnosticOfferSubmitted) return;
 
         setSelectedJob(null);
         setProposalJob(job);
@@ -524,6 +338,8 @@ export default function TechnicianDashboard() {
         setProposalFeedback("");
         setProposalError("");
     };
+
+    const canSendOffer = proposalJob?.status === "OPEN" && !proposalJob.diagnosticOfferSubmitted;
 
     const closeProposal = () => {
         if (proposalSubmitting) return;
@@ -536,183 +352,69 @@ export default function TechnicianDashboard() {
 
     const handleProposalSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
+        if (!proposalJob || !canSendOffer || proposalSubmitting) return;
         setProposalError("");
         setProposalFeedback("");
 
-        const technicianId = getTechnicianId();
-
-        if (!technicianId) {
-            setProposalError(
-                "No se encontró la sesión del técnico. Inicia sesión nuevamente."
-            );
-            return;
-        }
-
-        if (!proposalJob) return;
-
         const amount = Number(proposalForm.amount);
-
-        if (!Number.isFinite(amount) || amount <= 0) {
-            setProposalError("Ingresa un monto válido mayor a cero.");
+        const description = proposalForm.description.trim();
+        if (!Number.isFinite(amount) || amount <= 0 || amount > 99999999.99) {
+            setProposalError("Ingresa un precio entre S/ 0.01 y S/ 99 999 999.99.");
             return;
         }
-
-        if (
-            !proposalForm.estimatedTime.trim() ||
-            !proposalForm.description.trim()
-        ) {
-            setProposalError("Completa todos los campos para continuar.");
-            return;
-        }
-
-        if (proposalForm.estimatedTime.trim().length > 100) {
-            setProposalError(
-                "El tiempo estimado no puede superar los 100 caracteres."
-            );
-            return;
-        }
-
-        if (proposalForm.description.trim().length < 20) {
-            setProposalError(
-                "La descripción debe tener al menos 20 caracteres."
-            );
-            return;
-        }
-
-        if (proposalForm.description.trim().length > 1000) {
-            setProposalError(
-                "La descripción no puede superar los 1000 caracteres."
-            );
+        if (!description) {
+            setProposalError("Escribe una descripción del diagnóstico.");
             return;
         }
 
         setProposalSubmitting(true);
-
         try {
-            const stored = localStorage.getItem(PROPOSALS_STORAGE_KEY);
-            const allProposals: LocalProposal[] = stored
-                ? JSON.parse(stored)
-                : [];
-
-            if (!Array.isArray(allProposals)) {
-                throw new Error("El almacenamiento de propuestas no es válido.");
-            }
-
-            const alreadySent = allProposals.some(
-                (proposal) =>
-                    proposal.jobId === proposalJob.id &&
-                    proposal.technicianId === technicianId &&
-                    proposal.status !== "REJECTED"
-            );
-
-            if (alreadySent) {
-                setLocalProposals(
-                    allProposals.filter(
-                        (proposal) => proposal.technicianId === technicianId
-                    )
-                );
-
-                setProposalFeedback(
-                    "Ya tienes una propuesta registrada para este trabajo."
-                );
-                return;
-            }
-
-            const newProposal: LocalProposal = {
-                id: crypto.randomUUID(),
-                jobId: proposalJob.id,
-                technicianId,
-                jobTitle: proposalJob.title,
-                specialty: proposalJob.specialty,
-                districtName:
-                    proposalJob.ubigeoDistrictName || "No especificado",
-                amount,
-                estimatedTime: proposalForm.estimatedTime.trim(),
-                description: proposalForm.description.trim(),
-                createdAt: new Date().toISOString(),
-                status: "PENDING",
-            };
-
-            const updatedProposals = [...allProposals, newProposal];
-
-            localStorage.setItem(
-                PROPOSALS_STORAGE_KEY,
-                JSON.stringify(updatedProposals)
-            );
-
-            setLocalProposals(
-                updatedProposals.filter(
-                    (proposal) => proposal.technicianId === technicianId
-                )
-            );
-
-            setProposalFeedback(
-                "¡Tu propuesta se guardó correctamente! Se encuentra registrada localmente y está pendiente de revisión."
-            );
-
+            await jobService.createDiagnosticOffer(proposalJob.id, {
+                diagnosticPrice: amount,
+                description,
+            });
+            setProposalJob({ ...proposalJob, diagnosticOfferSubmitted: true });
+            setProposalFeedback("Oferta enviada. Quedó pendiente de revisión por el cliente.");
             setProposalForm(initialProposal);
         } catch (err) {
-            console.error("Error al guardar la propuesta local:", err);
-            setProposalError(
-                "No se pudo guardar la propuesta en este navegador. Comprueba el almacenamiento e inténtalo nuevamente."
-            );
+            const conflict = "La publicación se cerró o ya enviaste una oferta.";
+            setProposalError(jobErrorMessage(err, "No se pudo enviar la oferta de diagnóstico.", conflict));
+            if (isAxiosError(err) && err.response?.status === 409) {
+                try {
+                    const detail = await jobService.getJobDetail(proposalJob.id);
+                    setProposalJob(detail);
+                    if (detail.diagnosticOfferSubmitted) {
+                        setProposalError("");
+                        setProposalFeedback("Ya enviaste una oferta para esta publicación.");
+                    } else if (detail.status !== "OPEN") {
+                        setProposalError("La publicación ya no recibe ofertas.");
+                    }
+                } catch {
+                    // Conserva el mensaje del envío cuando falla la consulta del estado.
+                }
+            }
         } finally {
             setProposalSubmitting(false);
         }
     };
 
-    // ABRIR CALIFICACIÓN: CONSULTA ÚNICAMENTE LOCALSTORAGE
-    const openRating = (job: AcceptedJob) => {
-        if (job.status !== "COMPLETED") {
-            setRatingError(
-                "Solo puedes calificar al cliente cuando el trabajo esté finalizado."
-            );
-            return;
-        }
-
-        const technicianId = getTechnicianId();
-
-        if (!technicianId) {
-            setRatingError(
-                "No se pudo identificar al técnico. Inicia sesión nuevamente."
-            );
-            return;
-        }
+    const openRating = async (job: AcceptedJob) => {
+        if (job.status !== "COMPLETED") return;
 
         setRatingJob(job);
         setRatingForm(initialRating);
         setRatingError("");
         setRatingFeedback("");
         setExistingReview(null);
-        setEditingReview(false);
-        setHasLocalReviewEdit(false);
         setRatingLoading(true);
-
         try {
-            const localReviews = getLocalReviewEdits();
-
-            const localReview = localReviews.find(
-                (item) =>
-                    item.jobId === job.id &&
-                    item.technicianId === technicianId
-            );
-
-            if (localReview) {
-                setExistingReview(localReview);
-                setRatingForm({
-                    rating: localReview.rating,
-                    comment: localReview.comment,
-                });
-                setHasLocalReviewEdit(true);
-            } else {
-                setExistingReview(null);
-                setRatingForm(initialRating);
+            const review = await reviewService.getClientReviewByJobOffer(job.id);
+            setExistingReview(review);
+            setRatingForm({ rating: review.rating, comment: review.comment ?? "" });
+        } catch (error) {
+            if (!isAxiosError(error) || error.response?.status !== 404) {
+                setRatingError(jobErrorMessage(error, "No se pudo consultar la calificación anterior."));
             }
-        } catch (err) {
-            console.error("Error al consultar calificación local:", err);
-            setRatingError(
-                "No se pudo consultar la calificación guardada en este navegador."
-            );
         } finally {
             setRatingLoading(false);
         }
@@ -720,91 +422,41 @@ export default function TechnicianDashboard() {
 
     const closeRating = () => {
         if (ratingSubmitting || ratingLoading) return;
-
         setRatingJob(null);
-        setRatingForm(initialRating);
-        setRatingError("");
-        setRatingFeedback("");
-        setExistingReview(null);
-        setEditingReview(false);
-        setHasLocalReviewEdit(false);
     };
 
-    // REGISTRAR O EDITAR CALIFICACIÓN LOCAL
-    const handleRatingSubmit = (e: FormEvent<HTMLFormElement>) => {
+    const handleRatingSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
-
-        if (!ratingJob) return;
+        if (!ratingJob || existingReview || ratingLoading || ratingSubmitting) return;
 
         if (ratingForm.rating < 1 || ratingForm.rating > 5) {
             setRatingError("Selecciona una puntuación entre 1 y 5.");
             return;
         }
 
-        if (ratingForm.comment.length > 1000) {
-            setRatingError("El comentario no puede superar los 1000 caracteres.");
-            return;
-        }
-
-        const technicianId = getTechnicianId();
-
-        if (!technicianId) {
-            setRatingError(
-                "No se pudo identificar al técnico. Inicia sesión nuevamente."
-            );
-            return;
-        }
-
         setRatingSubmitting(true);
         setRatingError("");
-        setRatingFeedback("");
-
         try {
-            const reviews = getLocalReviewEdits();
-
-            const updatedReview: LocalReviewEdit = {
-                id: existingReview?.id || crypto.randomUUID(),
-                jobId: ratingJob.id,
-                technicianId,
+            const review = await reviewService.createClientReview(ratingJob.id, {
                 rating: ratingForm.rating,
-                comment: ratingForm.comment.trim(),
-                updatedAt: new Date().toISOString(),
-            };
-
-            const updatedReviews = [
-                ...reviews.filter(
-                    (item) =>
-                        !(
-                            item.jobId === ratingJob.id &&
-                            item.technicianId === technicianId
-                        )
-                ),
-                updatedReview,
-            ];
-
-            localStorage.setItem(
-                REVIEW_EDITS_STORAGE_KEY,
-                JSON.stringify(updatedReviews)
-            );
-
-            setExistingReview(updatedReview);
-            setRatingForm({
-                rating: updatedReview.rating,
-                comment: updatedReview.comment,
+                comment: ratingForm.comment.trim() || undefined,
             });
-            setEditingReview(false);
-            setHasLocalReviewEdit(true);
-
-            setRatingFeedback(
-                existingReview
-                    ? "¡Tu calificación se actualizó correctamente en este navegador!"
-                    : "¡Tu calificación se guardó correctamente en este navegador!"
-            );
-        } catch (err) {
-            console.error("Error al guardar calificación local:", err);
-            setRatingError(
-                "No se pudo guardar la calificación. Comprueba el almacenamiento del navegador."
-            );
+            setExistingReview(review);
+            setRatingForm({ rating: review.rating, comment: review.comment ?? "" });
+            setRatingFeedback("Tu calificación se registró correctamente.");
+        } catch (error) {
+            if (isAxiosError(error) && error.response?.status === 409) {
+                try {
+                    const review = await reviewService.getClientReviewByJobOffer(ratingJob.id);
+                    setExistingReview(review);
+                    setRatingForm({ rating: review.rating, comment: review.comment ?? "" });
+                    return;
+                } catch {
+                    setRatingError("Verifica que el trabajo siga finalizado e inténtalo de nuevo.");
+                }
+            } else {
+                setRatingError(jobErrorMessage(error, "No se pudo registrar la calificación."));
+            }
         } finally {
             setRatingSubmitting(false);
         }
@@ -1041,10 +693,6 @@ export default function TechnicianDashboard() {
                                             ? "Cargando trabajos..."
                                             : `${filteredJobs.length} resultados en esta página de ${totalElements} trabajos`}
                                     </p>
-                                    <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">
-                                        Tienes {localProposals.length} propuesta(s)
-                                        guardada(s) localmente.
-                                    </p>
                                 </div>
 
                                 <button
@@ -1089,8 +737,6 @@ export default function TechnicianDashboard() {
                             ) : (
                                 <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
                                     {filteredJobs.map((job) => {
-                                        const alreadyProposed = hasProposalForJob(job.id);
-
                                         return (
                                             <article
                                                 key={job.id}
@@ -1133,24 +779,12 @@ export default function TechnicianDashboard() {
                                                     </div>
                                                 </div>
 
-                                                <div className="mt-5 grid grid-cols-2 gap-3">
+                                                <div className="mt-5 grid">
                                                     <button
                                                         onClick={() => openJobDetail(job.id)}
                                                         className="rounded-xl border border-gray-300 px-3 py-3 text-sm font-semibold transition hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
                                                     >
                                                         Ver detalles
-                                                    </button>
-                                                    <button
-                                                        onClick={() => openProposal(job)}
-                                                        className={`rounded-xl px-3 py-3 text-sm font-semibold shadow-sm transition ${
-                                                            alreadyProposed
-                                                                ? "bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-950/50 dark:text-green-300"
-                                                                : "bg-blue-600 text-white hover:bg-blue-700"
-                                                        }`}
-                                                    >
-                                                        {alreadyProposed
-                                                            ? "Propuesta enviada"
-                                                            : "Hacer propuesta"}
                                                     </button>
                                                 </div>
                                             </article>
@@ -1198,7 +832,7 @@ export default function TechnicianDashboard() {
                                     Trabajos aceptados
                                 </h2>
                                 <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                                    Consulta y actualiza el estado de los trabajos aceptados.
+                                    Consulta las ofertas enviadas y el estado de tus trabajos asignados.
                                 </p>
                             </div>
 
@@ -1211,7 +845,15 @@ export default function TechnicianDashboard() {
                             </button>
                         </div>
 
-                        <div className="mb-6 grid gap-4 sm:grid-cols-2">
+                        <div className="mb-6 grid gap-4 sm:grid-cols-3">
+                            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 dark:border-amber-900/60 dark:bg-amber-950/30">
+                                <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                                    Ofertas en espera
+                                </p>
+                                <p className="mt-1 text-2xl font-extrabold text-amber-900 dark:text-amber-100">
+                                    {acceptedJobs.filter((job) => job.status === "AWAITING_ACCEPTANCE").length}
+                                </p>
+                            </div>
                             <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900/60 dark:bg-blue-950/30">
                                 <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">
                                     Trabajos pendientes
@@ -1260,16 +902,16 @@ export default function TechnicianDashboard() {
 
                         {acceptedLoading ? (
                             <div className="py-12 text-center text-gray-500">
-                                Cargando trabajos aceptados...
+                                Cargando trabajos y ofertas...
                             </div>
                         ) : filteredAcceptedJobs.length === 0 ? (
                             <div className="rounded-2xl border border-dashed border-gray-300 bg-white px-6 py-16 text-center dark:border-gray-700 dark:bg-gray-900">
                                 <div className="mb-4 text-5xl">📋</div>
                                 <h3 className="text-lg font-bold">
-                                    Todavía no tienes trabajos aceptados
+                                    Todavía no tienes ofertas enviadas ni trabajos asignados
                                 </h3>
                                 <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-gray-500 dark:text-gray-400">
-                                    Cuando un cliente acepte una de tus propuestas, el trabajo aparecerá aquí.
+                                    Las ofertas que envíes aparecerán aquí mientras esperas la respuesta del cliente.
                                 </p>
                                 <button
                                     onClick={() => setActiveTab("AVAILABLE")}
@@ -1290,7 +932,11 @@ export default function TechnicianDashboard() {
                                                 {job.specialty}
                                             </span>
 
-                                            {job.status === "PENDING" ? (
+                                            {job.status === "AWAITING_ACCEPTANCE" ? (
+                                                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                                                    En espera de aceptación
+                                                </span>
+                                            ) : job.status === "PENDING" ? (
                                                 <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-950 dark:text-amber-300">
                                                     Pendiente
                                                 </span>
@@ -1310,53 +956,43 @@ export default function TechnicianDashboard() {
                                         </p>
 
                                         <div className="space-y-3 border-t border-gray-100 pt-4 dark:border-gray-800">
-                                            <div className="flex items-center justify-between gap-2 text-sm">
-                                                <span className="text-gray-500 dark:text-gray-400">
-                                                    Cliente
-                                                </span>
-                                                <span className="text-right font-medium">
-                                                    {job.clientName}
-                                                </span>
-                                            </div>
+                                            {job.status !== "AWAITING_ACCEPTANCE" && (
+                                                <>
+                                                    <div className="flex items-center justify-between gap-2 text-sm">
+                                                        <span className="text-gray-500 dark:text-gray-400">Cliente</span>
+                                                        <span className="text-right font-medium">{job.clientName}</span>
+                                                    </div>
+                                                    <div className="flex items-center justify-between gap-2 text-sm">
+                                                        <span className="text-gray-500 dark:text-gray-400">Ubicación</span>
+                                                        <span className="text-right font-medium">{job.districtName}</span>
+                                                    </div>
+                                                </>
+                                            )}
 
                                             <div className="flex items-center justify-between gap-2 text-sm">
                                                 <span className="text-gray-500 dark:text-gray-400">
-                                                    Ubicación
-                                                </span>
-                                                <span className="text-right font-medium">
-                                                    {job.districtName}
-                                                </span>
-                                            </div>
-
-                                            <div className="flex items-center justify-between gap-2 text-sm">
-                                                <span className="text-gray-500 dark:text-gray-400">
-                                                    Monto acordado
-                                                </span>
-                                                <span className="font-semibold text-blue-600 dark:text-blue-400">
-                                                    S/ {job.amount.toFixed(2)}
-                                                </span>
-                                            </div>
-
-                                            <div className="flex items-center justify-between gap-2 text-sm">
-                                                <span className="text-gray-500 dark:text-gray-400">
-                                                    Tiempo estimado
-                                                </span>
-                                                <span className="text-right font-medium">
-                                                    {job.estimatedTime}
-                                                </span>
-                                            </div>
-
-                                            <div className="flex items-center justify-between gap-2 text-sm">
-                                                <span className="text-gray-500 dark:text-gray-400">
-                                                    Aceptado el
+                                                    Publicado el
                                                 </span>
                                                 <span className="font-medium">
-                                                    {formatDate(job.acceptedAt)}
+                                                    {formatDate(job.createdAt)}
                                                 </span>
                                             </div>
                                         </div>
 
-                                        {job.specificAddress && (
+                                        {job.status === "PENDING" && (
+                                            <dl className="mt-4 space-y-2 rounded-xl bg-gray-50 p-3 text-sm dark:bg-gray-800">
+                                                <div>
+                                                    <dt className="text-xs font-semibold text-gray-500 dark:text-gray-400">Teléfono del cliente</dt>
+                                                    <dd>{job.clientPhone || "No registrado"}</dd>
+                                                </div>
+                                                <div>
+                                                    <dt className="text-xs font-semibold text-gray-500 dark:text-gray-400">Correo del cliente</dt>
+                                                    <dd className="break-all">{job.clientEmail || "No disponible"}</dd>
+                                                </div>
+                                            </dl>
+                                        )}
+
+                                        {job.status !== "AWAITING_ACCEPTANCE" && job.specificAddress && (
                                             <div className="mt-4 rounded-xl bg-gray-50 p-3 text-sm dark:bg-gray-800">
                                                 <p className="mb-1 text-xs font-semibold text-gray-500 dark:text-gray-400">
                                                     Dirección del servicio
@@ -1365,23 +1001,26 @@ export default function TechnicianDashboard() {
                                             </div>
                                         )}
 
-                                        <div className="mt-5">
-                                            {job.status === "PENDING" ? (
-                                                <button
-                                                    onClick={() => handleCompleteJob(job)}
-                                                    className="w-full rounded-xl bg-green-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-green-700"
-                                                >
-                                                    ✓ Marcar como finalizado
-                                                </button>
-                                            ) : (
-                                                <button
-                                                    onClick={() => openRating(job)}
-                                                    className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-                                                >
-                                                    ★ Calificar cliente
-                                                </button>
-                                            )}
-                                        </div>
+                                        {job.status !== "AWAITING_ACCEPTANCE" && (
+                                            <div className="mt-5">
+                                                {job.status === "PENDING" ? (
+                                                    <button
+                                                        onClick={() => void handleCompleteJob(job)}
+                                                        disabled={completingJobId !== null}
+                                                        className="w-full rounded-xl bg-green-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-green-700"
+                                                    >
+                                                        {completingJobId === job.id ? "Finalizando..." : "Finalizar trabajo"}
+                                                    </button>
+                                                ) : (
+                                                    <button
+                                                        onClick={() => void openRating(job)}
+                                                        className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+                                                    >
+                                                        ★ Calificar cliente
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
 
                                         {job.status === "PENDING" && (
                                             <p className="mt-2 text-center text-xs text-gray-500 dark:text-gray-400">
@@ -1492,12 +1131,18 @@ export default function TechnicianDashboard() {
                                         >
                                             Cerrar
                                         </button>
-                                        <button
-                                            onClick={() => openProposal(selectedJob)}
-                                            className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
-                                        >
-                                            Hacer una propuesta
-                                        </button>
+                                        {selectedJob.diagnosticOfferSubmitted ? (
+                                            <p role="status" className="self-center text-center text-sm font-semibold text-green-700 dark:text-green-400">
+                                                Oferta enviada
+                                            </p>
+                                        ) : selectedJob.status === "OPEN" && (
+                                            <button
+                                                onClick={() => openProposal(selectedJob)}
+                                                className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+                                            >
+                                                Enviar oferta
+                                            </button>
+                                        )}
                                     </div>
                                 </>
                             )
@@ -1526,7 +1171,7 @@ export default function TechnicianDashboard() {
                                         Presenta tu oferta al cliente
                                     </h2>
                                     <p className="mt-2 max-w-md text-sm leading-relaxed text-blue-100">
-                                        Indica el costo de tu visita y diagnóstico, el tiempo estimado y cómo realizarás la revisión inicial.
+                                        Indica el precio del diagnóstico y qué incluye la revisión inicial.
                                     </p>
                                 </div>
                                 <button
@@ -1562,10 +1207,10 @@ export default function TechnicianDashboard() {
                                 </div>
                             )}
 
-                            {!hasProposalForJob(proposalJob.id) && (
+                            {canSendOffer && (
                                 <>
                                     <div>
-                                        <label className="mb-2 block text-sm font-semibold">
+                                        <label htmlFor="diagnostic-price" className="mb-2 block text-sm font-semibold">
                                             ¿Cuánto cobrarás por la visita y el diagnóstico? *
                                         </label>
                                         <div className="relative">
@@ -1573,8 +1218,10 @@ export default function TechnicianDashboard() {
                                                 S/
                                             </span>
                                             <input
+                                                id="diagnostic-price"
                                                 type="number"
                                                 min="0.01"
+                                                max="99999999.99"
                                                 step="0.01"
                                                 required
                                                 value={proposalForm.amount}
@@ -1594,28 +1241,8 @@ export default function TechnicianDashboard() {
                                     </div>
 
                                     <div>
-                                        <label className="mb-2 block text-sm font-semibold">
-                                            Tiempo estimado para la visita y el diagnóstico *
-                                        </label>
-                                        <input
-                                            type="text"
-                                            required
-                                            maxLength={100}
-                                            value={proposalForm.estimatedTime}
-                                            onChange={(e) =>
-                                                setProposalForm({
-                                                    ...proposalForm,
-                                                    estimatedTime: e.target.value,
-                                                })
-                                            }
-                                            placeholder="Ej. 2 días, 5 horas o 1 semana"
-                                            className={inputClass}
-                                        />
-                                    </div>
-
-                                    <div>
                                         <div className="mb-2 flex items-center justify-between gap-3">
-                                            <label className="text-sm font-semibold">
+                                            <label htmlFor="diagnostic-description" className="text-sm font-semibold">
                                                 Detalles de tu propuesta *
                                             </label>
                                             <span className="text-xs text-gray-400">
@@ -1623,8 +1250,8 @@ export default function TechnicianDashboard() {
                                             </span>
                                         </div>
                                         <textarea
+                                            id="diagnostic-description"
                                             required
-                                            minLength={20}
                                             maxLength={1000}
                                             rows={5}
                                             value={proposalForm.description}
@@ -1667,7 +1294,7 @@ export default function TechnicianDashboard() {
                                     Cerrar
                                 </button>
 
-                                {!hasProposalForJob(proposalJob.id) && (
+                                {canSendOffer && (
                                     <button
                                         type="submit"
                                         disabled={proposalSubmitting}
@@ -1675,7 +1302,7 @@ export default function TechnicianDashboard() {
                                     >
                                         {proposalSubmitting
                                             ? "Guardando..."
-                                            : "Enviar propuesta"}
+                                            : "Enviar oferta"}
                                     </button>
                                 )}
                             </div>
@@ -1684,7 +1311,7 @@ export default function TechnicianDashboard() {
                 </div>
             )}
 
-            {/* MODAL PARA CALIFICAR Y EDITAR CALIFICACIÓN */}
+            {/* MODAL PARA CALIFICAR AL CLIENTE */}
             {ratingJob && (
                 <div
                     className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
@@ -1701,11 +1328,7 @@ export default function TechnicianDashboard() {
                                         Calificación del servicio
                                     </span>
                                     <h2 className="text-2xl font-extrabold">
-                                        {existingReview && !editingReview
-                                            ? "Tu calificación"
-                                            : existingReview
-                                                ? "Editar calificación"
-                                                : "Califica al cliente"}
+                                        {existingReview ? "Tu calificación" : "Califica al cliente"}
                                     </h2>
                                     <p className="mt-2 text-sm leading-relaxed text-blue-100">
                                         Comparte tu experiencia con el cliente.
@@ -1745,7 +1368,7 @@ export default function TechnicianDashboard() {
                                 <>
                                     <div className="text-center">
                                         <h3 className="text-base font-bold">
-                                            {existingReview && !editingReview
+                                            {existingReview
                                                 ? "Tu calificación registrada"
                                                 : "¿Cómo fue tu experiencia con este cliente?"}
                                         </h3>
@@ -1759,7 +1382,7 @@ export default function TechnicianDashboard() {
                                                     key={star}
                                                     type="button"
                                                     disabled={
-                                                        !!existingReview && !editingReview
+                                                        !!existingReview
                                                     }
                                                     onClick={() =>
                                                         setRatingForm({
@@ -1768,7 +1391,7 @@ export default function TechnicianDashboard() {
                                                         })
                                                     }
                                                     className={`text-4xl transition ${
-                                                        existingReview && !editingReview
+                                                        existingReview
                                                             ? "cursor-not-allowed"
                                                             : "hover:scale-110"
                                                     } ${
@@ -1813,7 +1436,7 @@ export default function TechnicianDashboard() {
                                             maxLength={1000}
                                             value={ratingForm.comment}
                                             disabled={
-                                                !!existingReview && !editingReview
+                                                !!existingReview
                                             }
                                             onChange={(e) =>
                                                 setRatingForm({
@@ -1828,27 +1451,10 @@ export default function TechnicianDashboard() {
                                 </>
                             )}
 
-                            {existingReview && !editingReview && !ratingLoading && (
-                                <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-xs leading-relaxed text-green-800 dark:border-green-900/60 dark:bg-green-950/30 dark:text-green-300">
-                                    <p className="font-semibold">
-                                        ✓ Ya guardaste una calificación para este trabajo.
-                                    </p>
-                                    <p className="mt-1">
-                                        Esta calificación está almacenada localmente en este navegador.
-                                    </p>
-                                </div>
-                            )}
-
-                            {!existingReview && !ratingLoading && (
-                                <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-xs leading-relaxed text-blue-800 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-300">
-                                    Tu calificación se guardará localmente en este navegador.
-                                </div>
-                            )}
-
-                            {editingReview && (
-                                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
-                                    Estás editando tu calificación local. Los cambios no se enviarán al backend.
-                                </div>
+                            {existingReview && !ratingLoading && (
+                                <p className="rounded-xl bg-green-50 p-4 text-sm text-green-800 dark:bg-green-950/30 dark:text-green-300">
+                                    Ya registraste tu calificación para este trabajo.
+                                </p>
                             )}
 
                             {ratingError && (
@@ -1872,47 +1478,6 @@ export default function TechnicianDashboard() {
                                 >
                                     Cerrar
                                 </button>
-
-                                {existingReview && !editingReview && !ratingLoading && (
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setEditingReview(true);
-                                            setRatingFeedback("");
-                                            setRatingError("");
-                                        }}
-                                        className="rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-                                    >
-                                        ✎ Editar calificación
-                                    </button>
-                                )}
-
-                                {existingReview && editingReview && (
-                                    <>
-                                        <button
-                                            type="button"
-                                            onClick={() => {
-                                                setEditingReview(false);
-                                                setRatingError("");
-                                                setRatingFeedback("");
-                                                openRating(ratingJob);
-                                            }}
-                                            disabled={ratingSubmitting}
-                                            className="rounded-xl border border-gray-300 px-5 py-3 text-sm font-semibold transition hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-800"
-                                        >
-                                            Cancelar edición
-                                        </button>
-                                        <button
-                                            type="submit"
-                                            disabled={ratingSubmitting || ratingLoading}
-                                            className="rounded-xl bg-green-600 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-60"
-                                        >
-                                            {ratingSubmitting
-                                                ? "Guardando..."
-                                                : "Guardar cambios"}
-                                        </button>
-                                    </>
-                                )}
 
                                 {!existingReview && !ratingLoading && (
                                     <button

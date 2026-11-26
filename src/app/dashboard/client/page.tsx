@@ -1,10 +1,12 @@
 
 "use client";
 
-import { useState, useEffect, useCallback, type FormEvent, type ChangeEvent } from "react";
+import { useState, useEffect, useCallback, useMemo, type FormEvent, type ChangeEvent } from "react";
 import Header from "@/components/header/header";
+import DiagnosticOffersTable from "@/components/jobs/DiagnosticOffersTable";
+import { useCompletedJobSync } from "@/components/jobs/useCompletedJobSync";
 import { ubigeoService, DistritoDto } from "../../../services/ubigeo.service";
-import { jobService, JobPayload, JobFilters, JobDetail } from "../../../services/job.service";
+import { jobErrorMessage, jobService, JobPayload, JobFilters, JobDetail } from "../../../services/job.service";
 import { reviewService, JobReviewResponse } from "@/services/review.service";
 
 export interface Oferta extends JobPayload {
@@ -16,26 +18,6 @@ export interface Oferta extends JobPayload {
 }
 
 type DashboardTab = "PUBLICATIONS" | "ACCEPTED";
-
-type LocalProposal = {
-    id: string;
-    jobId: string;
-    technicianId: string;
-    jobTitle: string;
-    specialty: string;
-    districtName: string;
-    amount: number;
-    estimatedTime: string;
-    description: string;
-    createdAt: string;
-    status: "PENDING" | "ACCEPTED" | "REJECTED";
-};
-
-type LocalJobStatus = {
-    jobId: string;
-    technicianId: string;
-    status: "COMPLETED";
-};
 
 type AcceptedClientJob = {
     id: string;
@@ -59,9 +41,6 @@ const INITIAL_RATING: RatingForm = {
     rating: 0,
     comment: "",
 };
-
-const PROPOSALS_STORAGE_KEY = "vncu_proposals";
-const JOB_STATUS_STORAGE_KEY = "vncu_job_statuses";
 
 const OFICIOS_DISPONIBLES = [
     { id: "Electricidad", label: "Electricidad", value: "ELECTRICISTA", icon: "⚡" },
@@ -136,16 +115,13 @@ export default function ClientDashboardPage() {
     const [modoEdicion, setModoEdicion] = useState(false);
 
     // PROPUESTAS RECIBIDAS
-    const [ofertaPropuestas, setOfertaPropuestas] = useState<Oferta | null>(null);
-    const [mostrarPropuestas, setMostrarPropuestas] = useState(false);
-    const [propuestasLocales, setPropuestasLocales] = useState<LocalProposal[]>([]);
-    const [errorPropuestas, setErrorPropuestas] = useState("");
-    const [procesandoPropuesta, setProcesandoPropuesta] = useState<string | null>(null);
+    const [enfocarPropuestas, setEnfocarPropuestas] = useState(false);
 
     // TRABAJOS ACEPTADOS
     const [trabajosAceptados, setTrabajosAceptados] = useState<AcceptedClientJob[]>([]);
     const [cargandoAceptados, setCargandoAceptados] = useState(false);
     const [errorAceptados, setErrorAceptados] = useState<string | null>(null);
+    const [finalizandoId, setFinalizandoId] = useState<string | null>(null);
     const [busquedaAceptados, setBusquedaAceptados] = useState("");
 
     // CALIFICACIÓN DEL TÉCNICO
@@ -156,80 +132,6 @@ export default function ClientDashboardPage() {
     const [ratingSubmitting, setRatingSubmitting] = useState(false);
     const [ratingLoading, setRatingLoading] = useState(false);
     const [existingReview, setExistingReview] = useState<JobReviewResponse | null>(null);
-
-    // LEER PROPUESTAS GUARDADAS EN LOCALSTORAGE
-    const cargarPropuestasLocales = useCallback(() => {
-        try {
-            const stored = localStorage.getItem(PROPOSALS_STORAGE_KEY);
-
-            if (!stored) {
-                setPropuestasLocales([]);
-                return;
-            }
-
-            const parsed: unknown = JSON.parse(stored);
-
-            if (!Array.isArray(parsed)) {
-                setPropuestasLocales([]);
-                setErrorPropuestas("El almacenamiento de propuestas tiene un formato inválido.");
-                return;
-            }
-
-            const propuestasValidas = parsed.filter((item): item is LocalProposal => {
-                return (
-                    item !== null &&
-                    typeof item === "object" &&
-                    typeof item.id === "string" &&
-                    typeof item.jobId === "string" &&
-                    typeof item.technicianId === "string" &&
-                    typeof item.amount === "number" &&
-                    typeof item.estimatedTime === "string" &&
-                    typeof item.description === "string" &&
-                    typeof item.createdAt === "string" &&
-                    ["PENDING", "ACCEPTED", "REJECTED"].includes(item.status)
-                );
-            });
-
-            setPropuestasLocales(propuestasValidas);
-            setErrorPropuestas("");
-        } catch (error) {
-            console.error("Error al leer propuestas locales:", error);
-            setPropuestasLocales([]);
-            setErrorPropuestas("No se pudieron cargar las propuestas guardadas.");
-        }
-    }, []);
-
-    // CARGAR PROPUESTAS AL INICIAR
-    useEffect(() => {
-        cargarPropuestasLocales();
-    }, [cargarPropuestasLocales]);
-
-    // PROPUESTAS PERTENECIENTES A LA PUBLICACIÓN ABIERTA
-    const propuestasDeOferta = ofertaPropuestas
-        ? propuestasLocales.filter((proposal) => proposal.jobId === ofertaPropuestas.id)
-        : [];
-
-    const propuestasPendientes = propuestasDeOferta.filter(
-        (proposal) => proposal.status === "PENDING"
-    );
-
-    const propuestaAceptada = propuestasDeOferta.find(
-        (proposal) => proposal.status === "ACCEPTED"
-    );
-
-    // CONTAR PROPUESTAS LOCALES POR PUBLICACIÓN
-    const contarPropuestas = (jobId: string) => {
-        return propuestasLocales.filter((proposal) => proposal.jobId === jobId).length;
-    };
-
-    // FORMATEAR MONTO
-    const formatAmount = (amount: number) => {
-        return new Intl.NumberFormat("es-PE", {
-            style: "currency",
-            currency: "PEN",
-            minimumFractionDigits: 2,
-        }).format(amount);
-    };
 
     // CARGAR IDENTIFICADOR DEL CLIENTE
     useEffect(() => {
@@ -342,11 +244,7 @@ export default function ClientDashboardPage() {
             setDetalle(null);
 
             try {
-                const data = await jobService.getJobDetail(
-                    detalleId,
-                    clientId,
-                    controller.signal
-                );
+                const data = await jobService.getJobDetail(detalleId, controller.signal);
 
                 if (!controller.signal.aborted) {
                     setDetalle(data);
@@ -354,7 +252,7 @@ export default function ClientDashboardPage() {
             } catch (error) {
                 if (!controller.signal.aborted) {
                     console.error("Error al cargar detalle:", error);
-                    setErrorDetalle("No se pudo cargar el detalle del requerimiento.");
+                    setErrorDetalle(jobErrorMessage(error, "No se pudo cargar el detalle del requerimiento."));
                 }
             } finally {
                 if (!controller.signal.aborted) {
@@ -368,8 +266,7 @@ export default function ClientDashboardPage() {
         return () => controller.abort();
     }, [detalleId, clientId, recargaDetalle]);
 
-    // CARGAR TRABAJOS ACEPTADOS:
-    // INCLUYE PUBLICACIONES OPEN CON PROPUESTAS ACEPTADAS LOCALMENTE.
+    // CARGAR TRABAJOS ACEPTADOS
     const cargarTrabajosAceptados = useCallback(async () => {
         if (!clientId) return;
 
@@ -377,54 +274,7 @@ export default function ClientDashboardPage() {
             setCargandoAceptados(true);
             setErrorAceptados(null);
 
-            // Leer propuestas directamente para evitar utilizar un estado desactualizado.
-            const storedProposals = localStorage.getItem(PROPOSALS_STORAGE_KEY);
-            const parsedProposals: unknown = storedProposals
-                ? JSON.parse(storedProposals)
-                : [];
-
-            if (!Array.isArray(parsedProposals)) {
-                throw new Error("El almacenamiento de propuestas tiene un formato inválido.");
-            }
-
-            const propuestasAceptadas = parsedProposals.filter(
-                (proposal): proposal is LocalProposal =>
-                    proposal !== null &&
-                    typeof proposal === "object" &&
-                    typeof proposal.id === "string" &&
-                    typeof proposal.jobId === "string" &&
-                    typeof proposal.technicianId === "string" &&
-                    proposal.status === "ACCEPTED"
-            );
-
-            // Leer finalizaciones realizadas por el técnico en este navegador.
-            const storedStatuses = localStorage.getItem(JOB_STATUS_STORAGE_KEY);
-            const parsedStatuses: unknown = storedStatuses
-                ? JSON.parse(storedStatuses)
-                : [];
-
-            const estadosLocales: LocalJobStatus[] = Array.isArray(parsedStatuses)
-                ? parsedStatuses.filter(
-                    (item): item is LocalJobStatus =>
-                        item !== null &&
-                        typeof item === "object" &&
-                        typeof item.jobId === "string" &&
-                        typeof item.technicianId === "string" &&
-                        item.status === "COMPLETED"
-                )
-                : [];
-
-            // Consultar los tres estados del backend.
-            // OPEN es importante porque aceptar una propuesta local no cambia el estado del servidor.
-            const [publicadas, enProceso, completados] = await Promise.all([
-                jobService.getJobs({
-                    clientId,
-                    status: "OPEN",
-                    sortBy: "createdAt",
-                    sortDirection: "DESC",
-                    page: 0,
-                    size: 50,
-                }),
+            const [enProceso, completados] = await Promise.all([
                 jobService.getJobs({
                     clientId,
                     status: "IN_PROGRESS",
@@ -443,123 +293,32 @@ export default function ClientDashboardPage() {
                 }),
             ]);
 
-            const publicaciones = [
-                ...publicadas.content,
-                ...enProceso.content,
-                ...completados.content,
-            ];
-
-            // Eliminar publicaciones repetidas.
-            const publicacionesUnicas = Array.from(
-                new Map(publicaciones.map((job) => [job.id, job])).values()
+            const publicaciones = new Map(
+                [...enProceso.content, ...completados.content].map((job) => [job.id, job])
             );
 
-            const publicacionesPorId = new Map(
-                publicacionesUnicas.map((job) => [job.id, job])
-            );
-
-            // Solo incluir propuestas aceptadas que pertenezcan a publicaciones del cliente.
-            const propuestasDelCliente = propuestasAceptadas.filter(
-                (proposal) => publicacionesPorId.has(proposal.jobId)
-            );
-
-            // Los trabajos que aparecen por estado del backend también se mantienen.
-            const trabajosDelBackend = publicacionesUnicas.filter(
-                (job) => job.status === "IN_PROGRESS" || job.status === "COMPLETED"
-            );
-
-            const idsTrabajos = new Set([
-                ...trabajosDelBackend.map((job) => job.id),
-                ...propuestasDelCliente.map((proposal) => proposal.jobId),
-            ]);
-
-            const trabajosBase = Array.from(idsTrabajos)
-                .map((id) => publicacionesPorId.get(id))
-                .filter((job) => job !== undefined);
-
-            // Obtener la propuesta aceptada correspondiente a cada publicación.
-            const propuestaPorTrabajo = new Map<string, LocalProposal>();
-
-            propuestasDelCliente.forEach((proposal) => {
-                propuestaPorTrabajo.set(proposal.jobId, proposal);
-            });
-
-            // Consultar los detalles y utilizar la propuesta local como respaldo.
             const trabajos = await Promise.all(
-                trabajosBase.map(async (job) => {
-                    const propuesta = propuestaPorTrabajo.get(job.id);
-
-                    let detalleTrabajo: JobDetail | null = null;
-
-                    try {
-                        detalleTrabajo = await jobService.getJobDetail(job.id, clientId);
-                    } catch (error) {
-                        console.error(
-                            `No se pudo consultar el detalle del trabajo ${job.id}:`,
-                            error
-                        );
-                    }
-
-                    const finalizadoLocalmente = estadosLocales.some(
-                        (estado) =>
-                            estado.jobId === job.id &&
-                            (!propuesta ||
-                                estado.technicianId === propuesta.technicianId) &&
-                            estado.status === "COMPLETED"
-                    );
-
-                    const finalizadoEnBackend =
-                        detalleTrabajo?.status === "COMPLETED" ||
-                        job.status === "COMPLETED";
-
-                    const status =
-                        finalizadoLocalmente || finalizadoEnBackend
-                            ? "COMPLETED"
-                            : "IN_PROGRESS";
-
+                Array.from(publicaciones.values()).map(async (job): Promise<AcceptedClientJob> => {
+                    const detail = await jobService.getJobDetail(job.id);
                     return {
                         id: job.id,
-                        title:
-                            detalleTrabajo?.title ||
-                            propuesta?.jobTitle ||
-                            job.title,
-                        specialty:
-                            detalleTrabajo?.specialty ||
-                            propuesta?.specialty ||
-                            job.specialty,
-                        description:
-                            detalleTrabajo?.description ||
-                            job.description ||
-                            "",
-                        technicianName:
-                            detalleTrabajo?.technicianName ||
-                            (propuesta
-                                ? `Técnico ID: ${propuesta.technicianId}`
-                                : "Técnico asignado"),
-                        technicianId: propuesta?.technicianId,
-                        districtName:
-                            detalleTrabajo?.ubigeoDistrictName ||
-                            propuesta?.districtName ||
-                            job.ubigeoDistrictName ||
-                            "Distrito no disponible",
-                        specificAddress:
-                            detalleTrabajo?.specificAddress ||
-                            job.specificAddress ||
-                            "",
-                        createdAt:
-                            detalleTrabajo?.createdAt ||
-                            job.createdAt,
-                        status,
-                    } satisfies AcceptedClientJob;
+                        title: detail.title,
+                        specialty: detail.specialty,
+                        description: detail.description,
+                        technicianName: detail.technicianName ?? "Técnico asignado",
+                        technicianId: detail.technicianId ?? undefined,
+                        districtName: detail.ubigeoDistrictName || job.ubigeoDistrictName || "Distrito no disponible",
+                        specificAddress: detail.specificAddress ?? undefined,
+                        createdAt: detail.createdAt,
+                        status: detail.status === "COMPLETED" ? "COMPLETED" : "IN_PROGRESS",
+                    };
                 })
             );
 
             setTrabajosAceptados(trabajos);
         } catch (error) {
             console.error("Error al cargar trabajos aceptados:", error);
-            setErrorAceptados(
-                "No se pudieron cargar tus trabajos aceptados. Intenta nuevamente."
-            );
+            setErrorAceptados(jobErrorMessage(error, "No se pudieron cargar tus trabajos aceptados. Intenta nuevamente."));
         } finally {
             setCargandoAceptados(false);
         }
@@ -572,27 +331,34 @@ export default function ClientDashboardPage() {
         }
     }, [activeTab, clientId, cargarTrabajosAceptados]);
 
-    // SINCRONIZAR CAMBIOS DE OTRAS PESTAÑAS DEL NAVEGADOR
-    useEffect(() => {
-        const handleStorageChange = (event: StorageEvent) => {
-            if (
-                event.key === PROPOSALS_STORAGE_KEY ||
-                event.key === JOB_STATUS_STORAGE_KEY
-            ) {
-                cargarPropuestasLocales();
+    const trabajosEnProcesoIds = useMemo(() => activeTab === "ACCEPTED"
+        ? trabajosAceptados.filter((job) => job.status === "IN_PROGRESS").map((job) => job.id)
+        : [], [activeTab, trabajosAceptados]);
 
-                if (activeTab === "ACCEPTED") {
-                    void cargarTrabajosAceptados();
-                }
-            }
-        };
+    const marcarFinalizados = useCallback((ids: ReadonlySet<string>) => {
+        setTrabajosAceptados((jobs) => jobs.map((job) =>
+            job.status === "IN_PROGRESS" && ids.has(job.id) ? { ...job, status: "COMPLETED" } : job
+        ));
+        setRecarga((prev) => prev + 1);
+    }, []);
 
-        window.addEventListener("storage", handleStorageChange);
+    useCompletedJobSync(trabajosEnProcesoIds, marcarFinalizados);
 
-        return () => {
-            window.removeEventListener("storage", handleStorageChange);
-        };
-    }, [activeTab, cargarPropuestasLocales, cargarTrabajosAceptados]);
+    async function finalizarTrabajo(job: AcceptedClientJob) {
+        if (finalizandoId || !window.confirm("¿Confirmas que el trabajo ha finalizado?")) return;
+
+        setFinalizandoId(job.id);
+        setErrorAceptados(null);
+        try {
+            await jobService.completeJob(job.id);
+            marcarFinalizados(new Set([job.id]));
+            void abrirCalificacion({ ...job, status: "COMPLETED" });
+        } catch (error) {
+            setErrorAceptados(jobErrorMessage(error, "No se pudo finalizar el trabajo.", "El trabajo ya no está en progreso."));
+        } finally {
+            setFinalizandoId(null);
+        }
+    }
 
     // FILTRAR TRABAJOS ACEPTADOS
     const trabajosAceptadosFiltrados = trabajosAceptados.filter((job) => {
@@ -763,10 +529,6 @@ export default function ClientDashboardPage() {
                 cerrarModal();
             }
 
-            if (ofertaPropuestas?.id === id) {
-                cerrarPropuestas();
-            }
-
             setConsulta((prev) => ({
                 ...prev,
                 page: ofertas.length === 1 ? Math.max(0, prev.page - 1) : prev.page,
@@ -776,15 +538,16 @@ export default function ClientDashboardPage() {
             setSuccessMessage("Publicación eliminada correctamente.");
         } catch (error) {
             console.error("Error al eliminar publicación:", error);
-            setErrorMessage("No se pudo eliminar la publicación.");
+            setErrorMessage(jobErrorMessage(error, "No se pudo eliminar la publicación."));
         } finally {
             setEliminandoId(null);
         }
     };
 
     // ABRIR DETALLE
-    const abrirDetalle = (oferta: Oferta) => {
+    const abrirDetalle = (oferta: Oferta, mostrarOfertas = false) => {
         setOfertaSeleccionada(oferta);
+        setEnfocarPropuestas(mostrarOfertas);
         setModoEdicion(false);
         setDetalle(null);
         setErrorDetalle(null);
@@ -797,125 +560,9 @@ export default function ClientDashboardPage() {
         resetForm();
     };
 
-    // ABRIR Y CERRAR PROPUESTAS
-    const abrirPropuestas = (oferta: Oferta) => {
-        cargarPropuestasLocales();
-        setOfertaPropuestas(oferta);
-        setMostrarPropuestas(true);
-        setErrorPropuestas("");
-    };
-
-    const cerrarPropuestas = () => {
-        setMostrarPropuestas(false);
-        setOfertaPropuestas(null);
-        setErrorPropuestas("");
-        setProcesandoPropuesta(null);
-    };
-
-    // ACEPTAR O RECHAZAR UNA PROPUESTA
-    const cambiarEstadoPropuesta = (
-        proposalId: string,
-        nuevoEstado: "ACCEPTED" | "REJECTED"
-    ) => {
-        if (!ofertaPropuestas || procesandoPropuesta) return;
-
-        setProcesandoPropuesta(proposalId);
-        setErrorPropuestas("");
-
-        try {
-            const stored = localStorage.getItem(PROPOSALS_STORAGE_KEY);
-            const parsed: unknown = stored ? JSON.parse(stored) : [];
-
-            if (!Array.isArray(parsed)) {
-                throw new Error("El almacenamiento de propuestas no tiene un formato válido.");
-            }
-
-            const propuestasActuales = parsed as LocalProposal[];
-
-            const propuestaObjetivo = propuestasActuales.find(
-                (proposal) =>
-                    proposal.id === proposalId &&
-                    proposal.jobId === ofertaPropuestas.id
-            );
-
-            if (!propuestaObjetivo) {
-                setErrorPropuestas(
-                    "No se encontró esta propuesta. Actualiza la ventana e inténtalo nuevamente."
-                );
-                cargarPropuestasLocales();
-                return;
-            }
-
-            if (propuestaObjetivo.status !== "PENDING") {
-                setErrorPropuestas("Esta propuesta ya fue procesada anteriormente.");
-                cargarPropuestasLocales();
-                return;
-            }
-
-            if (nuevoEstado === "ACCEPTED") {
-                const otraAceptada = propuestasActuales.some(
-                    (proposal) =>
-                        proposal.jobId === ofertaPropuestas.id &&
-                        proposal.id !== proposalId &&
-                        proposal.status === "ACCEPTED"
-                );
-
-                if (otraAceptada) {
-                    setErrorPropuestas(
-                        "Esta publicación ya tiene una propuesta aceptada."
-                    );
-                    cargarPropuestasLocales();
-                    return;
-                }
-            }
-
-            const propuestasActualizadas = propuestasActuales.map((proposal) => {
-                if (proposal.id === proposalId) {
-                    return {
-                        ...proposal,
-                        status: nuevoEstado,
-                    };
-                }
-
-                // Al aceptar una propuesta, las demás pendientes quedan rechazadas.
-                if (
-                    nuevoEstado === "ACCEPTED" &&
-                    proposal.jobId === ofertaPropuestas.id &&
-                    proposal.status === "PENDING"
-                ) {
-                    return {
-                        ...proposal,
-                        status: "REJECTED" as const,
-                    };
-                }
-
-                return proposal;
-            });
-
-            localStorage.setItem(
-                PROPOSALS_STORAGE_KEY,
-                JSON.stringify(propuestasActualizadas)
-            );
-
-            setPropuestasLocales(propuestasActualizadas);
-
-            setSuccessMessage(
-                nuevoEstado === "ACCEPTED"
-                    ? "Propuesta aceptada localmente. El trabajo aparecerá en Trabajos aceptados y en el panel del técnico de este navegador."
-                    : "Propuesta rechazada correctamente."
-            );
-
-            if (nuevoEstado === "ACCEPTED" && activeTab === "ACCEPTED") {
-                void cargarTrabajosAceptados();
-            }
-        } catch (error) {
-            console.error("Error al actualizar propuesta:", error);
-            setErrorPropuestas(
-                "No se pudo actualizar la propuesta. Verifica el almacenamiento del navegador."
-            );
-        } finally {
-            setProcesandoPropuesta(null);
-        }
+    const actualizarOfertasAceptadas = () => {
+        setRecargaDetalle((prev) => prev + 1);
+        setRecarga((prev) => prev + 1);
     };
 
     // CONSULTAR SI EL TRABAJO YA TIENE UNA CALIFICACIÓN
@@ -1048,14 +695,8 @@ export default function ClientDashboardPage() {
                         "El trabajo ya tiene una calificación, pero no se pudo recuperar."
                     );
                 }
-            } else if (status === 400 || status === 422) {
-                setRatingError(
-                    "El trabajo aparece finalizado en este navegador, pero el servidor todavía no reconoce el estado COMPLETED. No se pudo guardar la calificación."
-                );
             } else {
-                setRatingError(
-                    "No se pudo registrar la calificación. Verifica tu conexión e inténtalo nuevamente."
-                );
+                setRatingError(jobErrorMessage(error, "No se pudo registrar la calificación. Inténtalo nuevamente."));
             }
         } finally {
             setRatingSubmitting(false);
@@ -1562,7 +1203,7 @@ export default function ClientDashboardPage() {
 
                             <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
                                 {ofertas.map((item) => {
-                                    const propuestasCount = contarPropuestas(item.id);
+                                    const propuestasCount = item.propuestasCount;
 
                                     const estadoDisponible = item.estado === "ACTIVA";
 
@@ -1653,7 +1294,7 @@ export default function ClientDashboardPage() {
 
                                                 <button
                                                     type="button"
-                                                    onClick={() => abrirPropuestas(item)}
+                                                    onClick={() => abrirDetalle(item, true)}
                                                     className="rounded-xl bg-blue-600 px-3 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
                                                 >
                                                     Ver propuestas
@@ -1762,7 +1403,7 @@ export default function ClientDashboardPage() {
                                     {trabajosCompletados}
                                 </p>
                                 <p className="mt-2 text-xs text-green-700/80 dark:text-green-300/80">
-                                    Servicios que el técnico ya marcó como finalizados.
+                                    Servicios finalizados por el cliente o el técnico.
                                 </p>
                             </div>
                         </div>
@@ -1814,7 +1455,7 @@ export default function ClientDashboardPage() {
                                 <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-gray-500 dark:text-gray-400">
                                     {busquedaAceptados
                                         ? "No encontramos trabajos que coincidan con tu búsqueda."
-                                        : "Cuando aceptes una propuesta, el trabajo aparecerá aquí. También podrás consultar su avance y calificar al técnico cuando lo marque como finalizado."}
+                                        : "Cuando aceptes una propuesta, podrás consultar el trabajo, finalizarlo y calificar al técnico."}
                                 </p>
                                 <button
                                     type="button"
@@ -1958,19 +1599,14 @@ export default function ClientDashboardPage() {
                                         {/* ACCIÓN */}
                                         <div className="mt-5">
                                             {job.status === "IN_PROGRESS" ? (
-                                                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/50 dark:bg-amber-950/20">
-                                                    <div className="flex items-start gap-3">
-                                                        <span className="text-lg">🔧</span>
-                                                        <div>
-                                                            <p className="text-sm font-bold text-amber-800 dark:text-amber-300">
-                                                                Servicio en desarrollo
-                                                            </p>
-                                                            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-                                                                El técnico todavía está realizando el trabajo. Podrás calificarlo cuando marque el servicio como finalizado.
-                                                            </p>
-                                                        </div>
-                                                    </div>
-                                                </div>
+                                                <button
+                                                    type="button"
+                                                    disabled={finalizandoId !== null}
+                                                    onClick={() => void finalizarTrabajo(job)}
+                                                    className="w-full rounded-xl bg-green-600 px-4 py-3 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-60"
+                                                >
+                                                    {finalizandoId === job.id ? "Finalizando..." : "Finalizar trabajo"}
+                                                </button>
                                             ) : (
                                                 <button
                                                     type="button"
@@ -1992,7 +1628,7 @@ export default function ClientDashboardPage() {
             {/* MODAL: DETALLE DE PUBLICACIÓN */}
             {ofertaSeleccionada && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4 backdrop-blur-sm">
-                    <div className="max-h-[90vh] w-full max-w-lg space-y-6 overflow-y-auto rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+                    <div className="max-h-[90vh] w-full max-w-4xl space-y-6 overflow-y-auto rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
                         <div className="flex items-center justify-between border-b border-gray-100 pb-4 dark:border-gray-700">
                             <h3 className="text-lg font-bold text-gray-900 dark:text-white">
                                 Detalles del Requerimiento
@@ -2089,6 +1725,14 @@ export default function ClientDashboardPage() {
                                     </p>
                                 </div>
 
+                                <DiagnosticOffersTable
+                                    key={detalle.id}
+                                    jobId={detalle.id}
+                                    isOpen={detalle.status === "OPEN"}
+                                    focusOnMount={enfocarPropuestas}
+                                    onAccepted={actualizarOfertasAceptadas}
+                                />
+
                                 <button
                                     type="button"
                                     onClick={() => handleEliminar(ofertaSeleccionada.id)}
@@ -2101,245 +1745,6 @@ export default function ClientDashboardPage() {
                                 </button>
                             </div>
                         )}
-                    </div>
-                </div>
-            )}
-
-            {/* MODAL: PROPUESTAS RECIBIDAS */}
-            {mostrarPropuestas && ofertaPropuestas && (
-                <div
-                    className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-900/60 p-4 backdrop-blur-sm"
-                    onClick={cerrarPropuestas}
-                >
-                    <div
-                        className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-gray-100 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-900"
-                        onClick={(e) => e.stopPropagation()}
-                    >
-                        <div className="flex items-start justify-between border-b border-gray-100 p-6 dark:border-gray-800">
-                            <div className="flex items-start gap-3">
-                                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-2xl dark:bg-blue-950/60">
-                                    💬
-                                </div>
-                                <div>
-                                    <h3 className="text-lg font-bold text-gray-900 dark:text-white">
-                                        Propuestas recibidas
-                                    </h3>
-                                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                        Revisa y compara las cotizaciones de los profesionales.
-                                    </p>
-                                </div>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={cerrarPropuestas}
-                                className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-sm text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
-                            >
-                                ✕
-                            </button>
-                        </div>
-
-                        <div className="border-b border-gray-100 bg-gray-50/70 px-6 py-5 dark:border-gray-800 dark:bg-gray-800/40">
-                            <div className="flex flex-wrap items-center justify-between gap-3">
-                                <div>
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
-                                        Solicitud
-                                    </span>
-                                    <h4 className="mt-1 text-base font-bold text-gray-900 dark:text-white">
-                                        {ofertaPropuestas.title}
-                                    </h4>
-                                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                                        {ofertaPropuestas.specialty}
-                                    </p>
-                                </div>
-                                <div className="rounded-2xl border border-blue-100 bg-white px-5 py-3 text-center dark:border-blue-900 dark:bg-gray-900">
-                                    <span className="block text-2xl font-black text-blue-600 dark:text-blue-400">
-                                        {propuestasDeOferta.length}
-                                    </span>
-                                    <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                                        Propuestas
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="space-y-5 p-6">
-                            {errorPropuestas && (
-                                <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
-                                    {errorPropuestas}
-                                </div>
-                            )}
-
-                            {propuestasDeOferta.length === 0 ? (
-                                <div className="flex flex-col items-center rounded-2xl border border-dashed border-gray-200 px-6 py-12 text-center dark:border-gray-700">
-                                    <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-gray-100 text-3xl dark:bg-gray-800">
-                                        📭
-                                    </div>
-                                    <h4 className="text-base font-bold text-gray-800 dark:text-white">
-                                        Todavía no tienes propuestas
-                                    </h4>
-                                    <p className="mt-2 max-w-sm text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-                                        Cuando un técnico envíe una propuesta para esta publicación, aparecerá aquí con su cotización y tiempo estimado.
-                                    </p>
-                                </div>
-                            ) : (
-                                <>
-                                    {propuestaAceptada && (
-                                        <div className="rounded-2xl border border-green-200 bg-green-50 p-4 dark:border-green-900/50 dark:bg-green-950/20">
-                                            <div className="flex items-start gap-3">
-                                                <span className="text-xl">✓</span>
-                                                <div>
-                                                    <h4 className="text-sm font-bold text-green-800 dark:text-green-300">
-                                                        Ya aceptaste una propuesta
-                                                    </h4>
-                                                    <p className="mt-1 text-xs leading-relaxed text-green-700 dark:text-green-400">
-                                                        La propuesta quedó aceptada en este navegador. El técnico puede verla en su panel y el trabajo aparecerá en tu pestaña de Trabajos aceptados. El servidor todavía no registra la asignación.
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    <div className="space-y-4">
-                                        {propuestasDeOferta
-                                            .slice()
-                                            .sort(
-                                                (a, b) =>
-                                                    new Date(b.createdAt).getTime() -
-                                                    new Date(a.createdAt).getTime()
-                                            )
-                                            .map((proposal) => (
-                                                <article
-                                                    key={proposal.id}
-                                                    className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-700 dark:bg-gray-900"
-                                                >
-                                                    <div className="flex flex-wrap items-start justify-between gap-3">
-                                                        <div>
-                                                            <div className="flex flex-wrap items-center gap-2">
-                                                                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
-                                                                    {proposal.specialty || ofertaPropuestas.specialty}
-                                                                </span>
-                                                                {proposal.status === "PENDING" ? (
-                                                                    <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-                                                                        Pendiente
-                                                                    </span>
-                                                                ) : proposal.status === "ACCEPTED" ? (
-                                                                    <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950/40 dark:text-green-300">
-                                                                        Aceptada
-                                                                    </span>
-                                                                ) : (
-                                                                    <span className="rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700 dark:bg-red-950/40 dark:text-red-300">
-                                                                        Rechazada
-                                                                    </span>
-                                                                )}
-                                                            </div>
-                                                            <p className="mt-3 text-xs font-semibold text-gray-500 dark:text-gray-400">
-                                                                Técnico ID: {proposal.technicianId}
-                                                            </p>
-                                                            <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
-                                                                Enviada el {formatDate(proposal.createdAt)}
-                                                            </p>
-                                                        </div>
-
-                                                        <div className="rounded-xl bg-blue-50 px-4 py-3 text-right dark:bg-blue-950/40">
-                                                            <span className="block text-[10px] font-semibold uppercase tracking-wider text-blue-500 dark:text-blue-400">
-                                                                Cotización
-                                                            </span>
-                                                            <span className="mt-1 block text-xl font-extrabold text-blue-700 dark:text-blue-300">
-                                                                {formatAmount(proposal.amount)}
-                                                            </span>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                                                        <div className="rounded-xl bg-gray-50 p-3 dark:bg-gray-800">
-                                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                                                                Tiempo estimado
-                                                            </p>
-                                                            <p className="mt-1 text-sm font-semibold text-gray-800 dark:text-gray-200">
-                                                                {proposal.estimatedTime}
-                                                            </p>
-                                                        </div>
-                                                        <div className="rounded-xl bg-gray-50 p-3 dark:bg-gray-800">
-                                                            <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-                                                                Distrito
-                                                            </p>
-                                                            <p className="mt-1 text-sm font-semibold text-gray-800 dark:text-gray-200">
-                                                                {proposal.districtName || "No especificado"}
-                                                            </p>
-                                                        </div>
-                                                    </div>
-
-                                                    <div className="mt-4">
-                                                        <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
-                                                            Detalles de la propuesta
-                                                        </p>
-                                                        <p className="whitespace-pre-wrap rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm leading-relaxed text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                                                            {proposal.description}
-                                                        </p>
-                                                    </div>
-
-                                                    {proposal.status === "PENDING" && (
-                                                        <div className="mt-5 flex flex-col gap-3 border-t border-gray-100 pt-4 dark:border-gray-700 sm:flex-row">
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    cambiarEstadoPropuesta(
-                                                                        proposal.id,
-                                                                        "REJECTED"
-                                                                    )
-                                                                }
-                                                                disabled={procesandoPropuesta !== null || !!propuestaAceptada}
-                                                                className="flex-1 rounded-xl border border-red-200 bg-white px-4 py-3 text-xs font-bold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900 dark:bg-gray-900 dark:text-red-400 dark:hover:bg-red-950/30"
-                                                            >
-                                                                {procesandoPropuesta === proposal.id
-                                                                    ? "Procesando..."
-                                                                    : "Rechazar propuesta"}
-                                                            </button>
-                                                            <button
-                                                                type="button"
-                                                                onClick={() =>
-                                                                    cambiarEstadoPropuesta(
-                                                                        proposal.id,
-                                                                        "ACCEPTED"
-                                                                    )
-                                                                }
-                                                                disabled={procesandoPropuesta !== null || !!propuestaAceptada}
-                                                                className="flex-1 rounded-xl bg-blue-600 px-4 py-3 text-xs font-bold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                                            >
-                                                                {procesandoPropuesta === proposal.id
-                                                                    ? "Procesando..."
-                                                                    : "✓ Aceptar propuesta"}
-                                                            </button>
-                                                        </div>
-                                                    )}
-                                                </article>
-                                            ))}
-                                    </div>
-
-                                    {propuestasPendientes.length > 0 && !propuestaAceptada && (
-                                        <p className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-xs leading-relaxed text-blue-700 dark:border-blue-900/50 dark:bg-blue-950/20 dark:text-blue-300">
-                                            Puedes aceptar una propuesta. Al hacerlo, las demás propuestas pendientes de esta publicación quedarán rechazadas en el almacenamiento local.
-                                        </p>
-                                    )}
-                                </>
-                            )}
-
-                            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/50 dark:bg-amber-950/20">
-                                <p className="text-xs leading-relaxed text-amber-800 dark:text-amber-300">
-                                    <strong>Importante:</strong> las propuestas y sus estados se guardan en el almacenamiento local de este navegador. El técnico puede visualizar la propuesta aceptada desde el mismo navegador, pero la asignación y el cambio de estado del trabajo en el servidor todavía no se realizan.
-                                </p>
-                            </div>
-                        </div>
-
-                        <div className="flex justify-end border-t border-gray-100 p-6 dark:border-gray-800">
-                            <button
-                                type="button"
-                                onClick={cerrarPropuestas}
-                                className="rounded-xl bg-gray-100 px-6 py-3 text-xs font-bold text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200"
-                            >
-                                Cerrar
-                            </button>
-                        </div>
                     </div>
                 </div>
             )}
@@ -2510,7 +1915,7 @@ export default function ClientDashboardPage() {
                                     }`}>
                                         {existingReview
                                             ? "Esta calificación ya está guardada. No es posible editarla ni enviar otra calificación para el mismo trabajo."
-                                            : "Tu calificación se enviará al servidor y quedará asociada a este trabajo. Solo podrás registrarla una vez. La finalización local no modifica el estado del trabajo en el backend."}
+                                            : "Puedes registrar una calificación por trabajo."}
                                     </p>
                                 </div>
                             )}
@@ -2549,7 +1954,7 @@ export default function ClientDashboardPage() {
                                             : "Enviar calificación"}
                                     </button>
                                 )}
-
+clear
                                 {existingReview && (
                                     <span className="inline-flex items-center justify-center gap-2 rounded-xl bg-green-100 px-6 py-3 text-sm font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
                                         ✓ Calificación registrada

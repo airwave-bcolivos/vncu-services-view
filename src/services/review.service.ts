@@ -1,4 +1,4 @@
-import { api } from "../lib/axios";
+import { api, sessionHeaders } from "../lib/axios";
 
 export interface PageResponse<T> {
     content: T[];
@@ -7,12 +7,6 @@ export interface PageResponse<T> {
     totalElements?: number;
     totalPages?: number;
     last?: boolean;
-}
-
-export interface ClientReviewRequest {
-    technicianId: string;
-    rating: number;
-    comment?: string | null;
 }
 
 export interface ClientReviewResponse {
@@ -55,12 +49,12 @@ export const reviewService = {
     // --- Reseñas hacia el cliente ---
     createClientReview: async (
         jobOfferId: string,
-        payload: ClientReviewRequest
+        payload: JobReviewRequest
     ): Promise<ClientReviewResponse> => {
         const { data } = await api.post<ClientReviewResponse>(
             `/api/v1/client/${encodeURIComponent(jobOfferId)}/client-review`,
             payload,
-            jsonHeaders
+            { headers: sessionHeaders() }
         );
         return data;
     },
@@ -70,7 +64,7 @@ export const reviewService = {
     ): Promise<ClientReviewResponse> => {
         const { data } = await api.get<ClientReviewResponse>(
             `/api/v1/client/${encodeURIComponent(jobOfferId)}/client-review`,
-            jsonHeaders
+            { headers: sessionHeaders() }
         );
         return data;
     },
@@ -97,7 +91,7 @@ export const reviewService = {
         const { data } = await api.post<JobReviewResponse>(
             `/api/v1/jobs/${encodeURIComponent(jobOfferId)}/review`,
             payload,
-            jsonHeaders
+            { headers: sessionHeaders() }
         );
         return data;
     },
@@ -107,7 +101,7 @@ export const reviewService = {
     ): Promise<JobReviewResponse> => {
         const { data } = await api.get<JobReviewResponse>(
             `/api/v1/jobs/${encodeURIComponent(jobOfferId)}/review`,
-            jsonHeaders
+            { headers: sessionHeaders() }
         );
         return data;
     },
