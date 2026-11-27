@@ -19,12 +19,12 @@ export default function RegisterForm({ role }: RegisterFormProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error", text: string } | null>(null);
 
-  const { 
-    register, 
-    handleSubmit, 
-    watch, 
+  const {
+    register,
+    handleSubmit,
+    watch,
     reset,
-    formState: { errors } 
+    formState: { errors }
   } = useForm<RegisterFormData>({
     mode: "onChange",
     defaultValues: { address: "" },
@@ -57,7 +57,7 @@ export default function RegisterForm({ role }: RegisterFormProps) {
         const payload: RegisterTechnicianPayload = { ...backendData };
         await authService.registerTechnician(payload);
       }
-      
+
       setMessage({ type: "success", text: "¡Registro exitoso! Redirigiendo al inicio de sesión..." });
       reset();
 
@@ -79,7 +79,7 @@ export default function RegisterForm({ role }: RegisterFormProps) {
 
   return (
     <form onSubmit={handleSubmit(onSubmit, onError)} className="space-y-4 text-left">
-      
+
       {/* MENSAJE GLOBAL */}
       {message && (
         <div className={`p-3 rounded mb-4 text-sm font-semibold ${message.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
@@ -91,19 +91,19 @@ export default function RegisterForm({ role }: RegisterFormProps) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Nombres *</label>
-          <input 
-            {...register("names", { required: "Los nombres son obligatorios" })} 
-            type="text" 
-            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.names ? 'border-red-500' : 'border-gray-300'}`} 
+          <input
+            {...register("names", { required: "Los nombres son obligatorios" })}
+            type="text"
+            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.names ? 'border-red-500' : 'border-gray-300'}`}
           />
           {errors.names && <p className="text-red-500 text-xs mt-1">{errors.names.message as string}</p>}
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Apellido Paterno *</label>
-          <input 
-            {...register("lastname", { required: "El apellido paterno es obligatorio" })} 
-            type="text" 
-            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.lastname ? 'border-red-500' : 'border-gray-300'}`} 
+          <input
+            {...register("lastname", { required: "El apellido paterno es obligatorio" })}
+            type="text"
+            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.lastname ? 'border-red-500' : 'border-gray-300'}`}
           />
           {errors.lastname && <p className="text-red-500 text-xs mt-1">{errors.lastname.message as string}</p>}
         </div>
@@ -121,8 +121,8 @@ export default function RegisterForm({ role }: RegisterFormProps) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Documento *</label>
-          <select 
-            {...register("documentTypeCode", { required: "Selecciona el tipo de documento" })} 
+          <select
+            {...register("documentTypeCode", { required: "Selecciona el tipo de documento" })}
             className={`w-full p-2 border rounded bg-white focus:ring-blue-500 focus:border-blue-500 ${errors.documentTypeCode ? 'border-red-500' : 'border-gray-300'}`}
           >
             <option value="">Seleccione...</option>
@@ -133,8 +133,8 @@ export default function RegisterForm({ role }: RegisterFormProps) {
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Número de Documento *</label>
-          <input 
-            {...register("documentId", { 
+          <input
+            {...register("documentId", {
               required: "El número de documento es obligatorio",
               validate: (value) => {
                 if (selectedDocumentType === "DNI") {
@@ -142,9 +142,9 @@ export default function RegisterForm({ role }: RegisterFormProps) {
                 }
                 return true;
               }
-            })} 
-            type="text" 
-            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.documentId ? 'border-red-500' : 'border-gray-300'}`} 
+            })}
+            type="text"
+            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.documentId ? 'border-red-500' : 'border-gray-300'}`}
           />
           {errors.documentId && <p className="text-red-500 text-xs mt-1">{errors.documentId.message as string}</p>}
         </div>
@@ -155,16 +155,16 @@ export default function RegisterForm({ role }: RegisterFormProps) {
         <>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Teléfono Móvil *</label>
-          <input 
-            {...register("phoneNumber", { 
+          <input
+            {...register("phoneNumber", {
               required: "El teléfono móvil es obligatorio",
               pattern: {
                 value: /^[0-9]{9}$/,
                 message: "El teléfono debe tener 9 dígitos"
               }
-            })} 
-            type="tel" 
-            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.phoneNumber ? 'border-red-500' : 'border-gray-300'}`} 
+            })}
+            type="tel"
+            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.phoneNumber ? 'border-red-500' : 'border-gray-300'}`}
           />
           {errors.phoneNumber && <p className="text-red-500 text-xs mt-1">{errors.phoneNumber.message as string}</p>}
         </div>
@@ -192,8 +192,8 @@ export default function RegisterForm({ role }: RegisterFormProps) {
         <>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Especialidad Principal *</label>
-            <select 
-              {...register("specialty", { required: "Debes seleccionar una especialidad" })} 
+            <select
+              {...register("specialty", { required: "Debes seleccionar una especialidad" })}
               className={`w-full p-2 border rounded bg-white focus:ring-blue-500 focus:border-blue-500 ${errors.specialty ? 'border-red-500' : 'border-gray-300'}`}
             >
               <option value="">Seleccione especialidad...</option>
@@ -208,10 +208,10 @@ export default function RegisterForm({ role }: RegisterFormProps) {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Breve Descripción *</label>
-            <textarea 
-              {...register("bioDescription", { required: "La descripción de experiencia es obligatoria" })} 
-              rows={3} 
-              className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.bioDescription ? 'border-red-500' : 'border-gray-300'}`} 
+            <textarea
+              {...register("bioDescription", { required: "La descripción de experiencia es obligatoria" })}
+              rows={3}
+              className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.bioDescription ? 'border-red-500' : 'border-gray-300'}`}
               placeholder="Ej: Experto en limpieza..."
             ></textarea>
             {errors.bioDescription && <p className="text-red-500 text-xs mt-1">{errors.bioDescription.message as string}</p>}
@@ -221,19 +221,19 @@ export default function RegisterForm({ role }: RegisterFormProps) {
 
       {/* 4. DATOS DE ACCESO */}
       <hr className="my-6 border-gray-200" />
-      
+
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Correo Electrónico *</label>
-        <input 
-          {...register("email", { 
+        <input
+          {...register("email", {
             required: "El email es obligatorio",
             pattern: {
               value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
               message: "Formato de correo inválido (ejemplo@correo.com)"
             }
-          })} 
-          type="email" 
-          className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.email ? 'border-red-500' : 'border-gray-300'}`} 
+          })}
+          type="email"
+          className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.email ? 'border-red-500' : 'border-gray-300'}`}
         />
         {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email.message as string}</p>}
       </div>
@@ -241,32 +241,32 @@ export default function RegisterForm({ role }: RegisterFormProps) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña *</label>
-          <input 
-            {...register("password", { 
+          <input
+            {...register("password", {
               required: "La contraseña es obligatoria",
               minLength: { value: 6, message: "Debe tener al menos 6 caracteres" }
-            })} 
-            type="password" 
-            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.password ? 'border-red-500' : 'border-gray-300'}`} 
+            })}
+            type="password"
+            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.password ? 'border-red-500' : 'border-gray-300'}`}
           />
           {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password.message as string}</p>}
         </div>
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Confirmar Contraseña *</label>
-          <input 
-            {...register("confirmPassword", { 
+          <input
+            {...register("confirmPassword", {
               required: "Debes confirmar tu contraseña",
               validate: (value) => value === passwordValue || "Las contraseñas no coinciden"
-            })} 
-            type="password" 
-            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.confirmPassword ? 'border-red-500' : 'border-gray-300'}`} 
+            })}
+            type="password"
+            className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.confirmPassword ? 'border-red-500' : 'border-gray-300'}`}
           />
           {errors.confirmPassword && <p className="text-red-500 text-xs mt-1">{errors.confirmPassword.message as string}</p>}
         </div>
       </div>
 
-      <button 
-        type="submit" 
+      <button
+        type="submit"
         disabled={isLoading}
         className="w-full mt-6 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded transition-colors disabled:bg-blue-400"
       >

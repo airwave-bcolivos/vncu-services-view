@@ -1,6 +1,8 @@
+
 "use client";
 
 import { useState } from "react";
+import { isAxiosError } from "axios";
 import { useForm } from "react-hook-form";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -33,16 +35,16 @@ export default function LoginPage() {
       // 3. Actualizamos el Header
       window.dispatchEvent(new Event("auth-change"));
 
-      // 3. Redirigimos según el rol
+      // 4. Redirigimos según el rol
       if (response.role === "CLIENT") {
         router.push("/dashboard/client");
       } else {
         router.push("/dashboard/technician");
       }
 
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      if (error.response?.status === 401) {
+      if (isAxiosError(error) && error.response?.status === 401) {
         setErrorMessage("Correo o contraseña incorrectos.");
       } else {
         setErrorMessage("Ocurrió un error al intentar iniciar sesión. Intenta de nuevo.");
@@ -52,72 +54,88 @@ export default function LoginPage() {
   };
 
   return (
-    <main className="min-h-screen flex flex-col bg-gray-50">
-      <Header />
+      <main className="min-h-screen flex flex-col bg-gray-50 dark:bg-gray-950 dark:text-gray-100">
+        <Header />
 
-      <section className="flex flex-1 items-center justify-center p-6">
-      <div className="w-full max-w-md bg-white rounded-xl shadow-md p-8">
+        <section className="flex flex-1 items-center justify-center p-6">
+          <div className="w-full max-w-md bg-white dark:bg-gray-900 border border-transparent dark:border-gray-700 rounded-xl shadow-md p-8">
 
-        <div className="text-center mb-8">
-          <Link href="/" className="text-3xl font-extrabold text-blue-600 tracking-tight">
-            Vincu
-          </Link>
-          <h1 className="text-xl font-bold text-gray-900 mt-4">Iniciar Sesión</h1>
-          <p className="text-sm text-gray-600 mt-2">Bienvenido de nuevo a la plataforma</p>
-        </div>
+            <div className="text-center mb-8">
+              <Link href="/" className="text-3xl font-extrabold text-blue-600 dark:text-blue-400 tracking-tight">
+                Vincu
+              </Link>
+              <h1 className="text-xl font-bold text-gray-900 dark:text-white mt-4">
+                Iniciar Sesión
+              </h1>
+              <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
+                Bienvenido de nuevo a la plataforma
+              </p>
+            </div>
 
-        {/* MENSAJE DE ERROR */}
-        {errorMessage && (
-          <div className="p-3 rounded mb-6 text-sm font-semibold bg-red-100 text-red-700 text-center">
-            {errorMessage}
+            {/* MENSAJE DE ERROR */}
+            {errorMessage && (
+                <div className="p-3 rounded mb-6 text-sm font-semibold bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300 dark:border dark:border-red-900 text-center">
+                  {errorMessage}
+                </div>
+            )}
+
+            <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Correo Electrónico
+                </label>
+                <input
+                    {...register("email", {
+                      required: "El correo es obligatorio",
+                      pattern: {
+                        value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
+                        message: "Formato de correo inválido"
+                      }
+                    })}
+                    type="email"
+                    className={`w-full p-2 border rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-blue-500 focus:border-blue-500 ${errors.email ? 'border-red-500' : 'border-gray-300 dark:border-gray-700'}`}
+                />
+                {errors.email && (
+                    <p className="text-red-500 dark:text-red-400 text-xs mt-1">
+                      {errors.email.message}
+                    </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Contraseña
+                </label>
+                <input
+                    {...register("password", { required: "La contraseña es obligatoria" })}
+                    type="password"
+                    className={`w-full p-2 border rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-blue-500 focus:border-blue-500 ${errors.password ? 'border-red-500' : 'border-gray-300 dark:border-gray-700'}`}
+                />
+                {errors.password && (
+                    <p className="text-red-500 dark:text-red-400 text-xs mt-1">
+                      {errors.password.message}
+                    </p>
+                )}
+              </div>
+
+              <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded transition-colors disabled:bg-blue-400 mt-4"
+              >
+                {isLoading ? "Verificando..." : "Ingresar"}
+              </button>
+            </form>
+
+            <div className="mt-8 text-center text-sm text-gray-600 dark:text-gray-400 border-t border-gray-200 dark:border-gray-700 pt-6">
+              ¿No tienes una cuenta?{" "}
+              <Link href="/register" className="text-blue-600 dark:text-blue-400 font-semibold hover:underline">
+                Regístrate aquí
+              </Link>
+            </div>
           </div>
-        )}
-
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Correo Electrónico</label>
-            <input
-              {...register("email", {
-                required: "El correo es obligatorio",
-                pattern: {
-                  value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
-                  message: "Formato de correo inválido"
-                }
-              })}
-              type="email"
-              className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.email ? 'border-red-500' : 'border-gray-300'}`}
-            />
-            {errors.email && <p className="text-red-500 text-xs mt-1">{errors.email.message}</p>}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Contraseña</label>
-            <input
-              {...register("password", { required: "La contraseña es obligatoria" })}
-              type="password"
-              className={`w-full p-2 border rounded focus:ring-blue-500 focus:border-blue-500 ${errors.password ? 'border-red-500' : 'border-gray-300'}`}
-            />
-            {errors.password && <p className="text-red-500 text-xs mt-1">{errors.password.message}</p>}
-          </div>
-
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded transition-colors disabled:bg-blue-400 mt-4"
-          >
-            {isLoading ? "Verificando..." : "Ingresar"}
-          </button>
-        </form>
-
-        <div className="mt-8 text-center text-sm text-gray-600 border-t pt-6">
-          ¿No tienes una cuenta?{" "}
-          <Link href="/register" className="text-blue-600 font-semibold hover:underline">
-            Regístrate aquí
-          </Link>
-        </div>
-      </div>
-      </section>
-    </main>
+        </section>
+      </main>
   );
 }

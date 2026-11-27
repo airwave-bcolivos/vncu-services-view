@@ -1,9 +1,13 @@
+
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo, type FormEvent, type ChangeEvent } from "react";
 import Header from "@/components/header/header";
+import DiagnosticOffersTable from "@/components/jobs/DiagnosticOffersTable";
+import { useCompletedJobSync } from "@/components/jobs/useCompletedJobSync";
 import { ubigeoService, DistritoDto } from "../../../services/ubigeo.service";
-import { jobService, JobPayload, JobFilters, JobDetail } from "../../../services/job.service";
+import { jobErrorMessage, jobService, JobPayload, JobFilters, JobDetail } from "../../../services/job.service";
+import { reviewService, JobReviewResponse } from "@/services/review.service";
 
 export interface Oferta extends JobPayload {
     id: string;
@@ -13,7 +17,31 @@ export interface Oferta extends JobPayload {
     nombreDistrito?: string;
 }
 
-// Oficios mapeados con los valores que espera el backend en 'specialty'
+type DashboardTab = "PUBLICATIONS" | "ACCEPTED";
+
+type AcceptedClientJob = {
+    id: string;
+    title: string;
+    specialty: string;
+    description: string;
+    technicianName: string;
+    technicianId?: string;
+    districtName: string;
+    specificAddress?: string;
+    createdAt: string;
+    status: "IN_PROGRESS" | "COMPLETED";
+};
+
+type RatingForm = {
+    rating: number;
+    comment: string;
+};
+
+const INITIAL_RATING: RatingForm = {
+    rating: 0,
+    comment: "",
+};
+
 const OFICIOS_DISPONIBLES = [
     { id: "Electricidad", label: "Electricidad", value: "ELECTRICISTA", icon: "⚡" },
     { id: "Gasfitería", label: "Gasfitería", value: "GASFITERO", icon: "🚰" },
@@ -24,38 +52,58 @@ const OFICIOS_DISPONIBLES = [
 ];
 
 const FILTROS_INICIALES = {
-    createdFrom: "", createdTo: "", specialty: "", minBudget: "", maxBudget: "",
-    status: "", sortBy: "createdAt", sortDirection: "DESC" as "ASC" | "DESC", size: "10",
+    createdFrom: "",
+    createdTo: "",
+    specialty: "",
+    status: "",
+    sortBy: "createdAt",
+    sortDirection: "DESC" as "ASC" | "DESC",
+    size: "10",
 };
 
+const inputClass =
+    "w-full rounded-2xl border border-gray-200 bg-gray-50/50 px-4 py-3 text-sm text-gray-900 outline-none transition-all duration-300 placeholder:text-gray-400 focus:border-blue-600 focus:bg-white focus:ring-4 focus:ring-blue-600/10 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:border-blue-500 dark:focus:bg-gray-800";
+
+const filterInputClass =
+    "block w-full rounded-xl border border-gray-200 bg-white p-2 text-gray-800 outline-none focus:border-blue-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100";
+
 export default function ClientDashboardPage() {
+    const [activeTab, setActiveTab] = useState<DashboardTab>("PUBLICATIONS");
+
     const [isLoading, setIsLoading] = useState(false);
     const [eliminandoId, setEliminandoId] = useState<string | null>(null);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
     const [distritos, setDistritos] = useState<DistritoDto[]>([]);
+    const [mostrarFormulario, setMostrarFormulario] = useState(false);
 
     const MAX_TITULO_LENGTH = 150;
     const MAX_DESCRIPCION_LENGTH = 500;
 
     const [filtros, setFiltros] = useState(FILTROS_INICIALES);
     const [clientId, setClientId] = useState("");
-    const [consulta, setConsulta] = useState<JobFilters>({ clientId: "", sortBy: "createdAt", sortDirection: "DESC", page: 0, size: 10 });
+
+    const [consulta, setConsulta] = useState<JobFilters>({
+        clientId: "",
+        sortBy: "createdAt",
+        sortDirection: "DESC",
+        page: 0,
+        size: 10,
+    });
+
     const [recarga, setRecarga] = useState(0);
     const [cargandoLista, setCargandoLista] = useState(true);
     const [errorLista, setErrorLista] = useState<string | null>(null);
     const [total, setTotal] = useState(0);
     const [totalPaginas, setTotalPaginas] = useState(0);
-
     const [ofertas, setOfertas] = useState<Oferta[]>([]);
 
-    // Estado del formulario
     const [form, setForm] = useState({
         titulo: "",
         descripcion: "",
         direccion: "",
         ubigeoDistrictId: "",
-        presupuestoMaximo: "",
         oficio: "ELECTRICISTA",
     });
 
@@ -66,14 +114,36 @@ export default function ClientDashboardPage() {
     const [recargaDetalle, setRecargaDetalle] = useState(0);
     const [modoEdicion, setModoEdicion] = useState(false);
 
+    // PROPUESTAS RECIBIDAS
+    const [enfocarPropuestas, setEnfocarPropuestas] = useState(false);
+
+    // TRABAJOS ACEPTADOS
+    const [trabajosAceptados, setTrabajosAceptados] = useState<AcceptedClientJob[]>([]);
+    const [cargandoAceptados, setCargandoAceptados] = useState(false);
+    const [errorAceptados, setErrorAceptados] = useState<string | null>(null);
+    const [finalizandoId, setFinalizandoId] = useState<string | null>(null);
+    const [busquedaAceptados, setBusquedaAceptados] = useState("");
+
+    // CALIFICACIÓN DEL TÉCNICO
+    const [trabajoCalificar, setTrabajoCalificar] = useState<AcceptedClientJob | null>(null);
+    const [ratingForm, setRatingForm] = useState<RatingForm>(INITIAL_RATING);
+    const [ratingError, setRatingError] = useState("");
+    const [ratingFeedback, setRatingFeedback] = useState("");
+    const [ratingSubmitting, setRatingSubmitting] = useState(false);
+    const [ratingLoading, setRatingLoading] = useState(false);
+    const [existingReview, setExistingReview] = useState<JobReviewResponse | null>(null);
+
+    // CARGAR IDENTIFICADOR DEL CLIENTE
     useEffect(() => {
         try {
             const storedClientId = localStorage.getItem("vncu_user_id")?.trim();
+
             if (!storedClientId) {
                 setErrorLista("No se encontró el cliente de la sesión. Inicia sesión nuevamente.");
                 setCargandoLista(false);
                 return;
             }
+
             setClientId(storedClientId);
             setConsulta((prev) => ({ ...prev, clientId: storedClientId }));
         } catch {
@@ -82,14 +152,18 @@ export default function ClientDashboardPage() {
         }
     }, []);
 
-    // Cargar distritos al montar
+    // CARGAR DISTRITOS
     useEffect(() => {
         const cargarDistritos = async () => {
             try {
                 const data = await ubigeoService.getDistricts();
                 setDistritos(data);
+
                 if (data.length > 0) {
-                    setForm((prev) => ({ ...prev, ubigeoDistrictId: data[0].id }));
+                    setForm((prev) => ({
+                        ...prev,
+                        ubigeoDistrictId: data[0].id,
+                    }));
                 }
             } catch (error) {
                 console.error("Error al cargar los distritos:", error);
@@ -97,73 +171,230 @@ export default function ClientDashboardPage() {
             }
         };
 
-        cargarDistritos();
+        void cargarDistritos();
     }, []);
 
+    // CARGAR PUBLICACIONES DEL CLIENTE
     useEffect(() => {
         if (!consulta.clientId) return;
+
         const controller = new AbortController();
+
         const cargarSolicitudes = async () => {
             setCargandoLista(true);
             setErrorLista(null);
+
             try {
                 const data = await jobService.getJobs(consulta, controller.signal);
+
                 if (controller.signal.aborted) return;
-                setOfertas(data.content.map((job) => ({
-                    ...job,
-                    clientId: consulta.clientId,
-                    description: job.description ?? "",
-                    specificAddress: job.specificAddress ?? "",
-                    latitude: null,
-                    longitude: null,
-                    nombreDistrito: job.ubigeoDistrictName,
-                    fechaCreacion: new Date(job.createdAt).toLocaleDateString("es-PE"),
-                    estado: job.status === "OPEN" ? "ACTIVA" : job.status,
-                    propuestasCount: job.propuestasCount ?? 0,
-                })));
+
+                setOfertas(
+                    data.content.map((job) => ({
+                        ...job,
+                        clientId: consulta.clientId,
+                        description: job.description ?? "",
+                        specificAddress: job.specificAddress ?? "",
+                        latitude: null,
+                        longitude: null,
+                        nombreDistrito: job.ubigeoDistrictName,
+                        fechaCreacion: new Date(job.createdAt).toLocaleDateString("es-PE"),
+                        estado:
+                            job.status === "OPEN"
+                                ? "ACTIVA"
+                                : job.status === "IN_PROGRESS"
+                                    ? "EN PROCESO"
+                                    : job.status === "COMPLETED"
+                                        ? "COMPLETADA"
+                                        : job.status,
+                        propuestasCount: job.propuestasCount ?? 0,
+                    }))
+                );
+
                 setTotal(data.totalElements);
                 setTotalPaginas(data.totalPages);
-            } catch {
-                if (!controller.signal.aborted) setErrorLista("No se pudieron cargar las solicitudes. Intenta nuevamente.");
+            } catch (error) {
+                if (!controller.signal.aborted) {
+                    console.error("Error al cargar publicaciones:", error);
+                    setErrorLista("No se pudieron cargar las solicitudes. Intenta nuevamente.");
+                }
             } finally {
-                if (!controller.signal.aborted) setCargandoLista(false);
+                if (!controller.signal.aborted) {
+                    setCargandoLista(false);
+                }
             }
         };
+
         void cargarSolicitudes();
+
         return () => controller.abort();
     }, [consulta, recarga]);
 
+    // CARGAR DETALLE DE UNA PUBLICACIÓN
     const detalleId = ofertaSeleccionada?.id;
+
     useEffect(() => {
         if (!detalleId || !clientId) return;
+
         const controller = new AbortController();
+
         const cargarDetalle = async () => {
             setCargandoDetalle(true);
             setErrorDetalle(null);
             setDetalle(null);
+
             try {
-                const data = await jobService.getJobDetail(detalleId, clientId, controller.signal);
-                if (!controller.signal.aborted) setDetalle(data);
-            } catch {
-                if (!controller.signal.aborted) setErrorDetalle("No se pudo cargar el detalle del requerimiento.");
+                const data = await jobService.getJobDetail(detalleId, controller.signal);
+
+                if (!controller.signal.aborted) {
+                    setDetalle(data);
+                }
+            } catch (error) {
+                if (!controller.signal.aborted) {
+                    console.error("Error al cargar detalle:", error);
+                    setErrorDetalle(jobErrorMessage(error, "No se pudo cargar el detalle del requerimiento."));
+                }
             } finally {
-                if (!controller.signal.aborted) setCargandoDetalle(false);
+                if (!controller.signal.aborted) {
+                    setCargandoDetalle(false);
+                }
             }
         };
+
         void cargarDetalle();
+
         return () => controller.abort();
     }, [detalleId, clientId, recargaDetalle]);
 
-    const aplicarFiltros = (event: React.FormEvent<HTMLFormElement>) => {
+    // CARGAR TRABAJOS ACEPTADOS
+    const cargarTrabajosAceptados = useCallback(async () => {
+        if (!clientId) return;
+
+        try {
+            setCargandoAceptados(true);
+            setErrorAceptados(null);
+
+            const [enProceso, completados] = await Promise.all([
+                jobService.getJobs({
+                    clientId,
+                    status: "IN_PROGRESS",
+                    sortBy: "createdAt",
+                    sortDirection: "DESC",
+                    page: 0,
+                    size: 50,
+                }),
+                jobService.getJobs({
+                    clientId,
+                    status: "COMPLETED",
+                    sortBy: "createdAt",
+                    sortDirection: "DESC",
+                    page: 0,
+                    size: 50,
+                }),
+            ]);
+
+            const publicaciones = new Map(
+                [...enProceso.content, ...completados.content].map((job) => [job.id, job])
+            );
+
+            const trabajos = await Promise.all(
+                Array.from(publicaciones.values()).map(async (job): Promise<AcceptedClientJob> => {
+                    const detail = await jobService.getJobDetail(job.id);
+                    return {
+                        id: job.id,
+                        title: detail.title,
+                        specialty: detail.specialty,
+                        description: detail.description,
+                        technicianName: detail.technicianName ?? "Técnico asignado",
+                        technicianId: detail.technicianId ?? undefined,
+                        districtName: detail.ubigeoDistrictName || job.ubigeoDistrictName || "Distrito no disponible",
+                        specificAddress: detail.specificAddress ?? undefined,
+                        createdAt: detail.createdAt,
+                        status: detail.status === "COMPLETED" ? "COMPLETED" : "IN_PROGRESS",
+                    };
+                })
+            );
+
+            setTrabajosAceptados(trabajos);
+        } catch (error) {
+            console.error("Error al cargar trabajos aceptados:", error);
+            setErrorAceptados(jobErrorMessage(error, "No se pudieron cargar tus trabajos aceptados. Intenta nuevamente."));
+        } finally {
+            setCargandoAceptados(false);
+        }
+    }, [clientId]);
+
+    // ACTUALIZAR AUTOMÁTICAMENTE AL ABRIR LA PESTAÑA
+    useEffect(() => {
+        if (activeTab === "ACCEPTED" && clientId) {
+            void cargarTrabajosAceptados();
+        }
+    }, [activeTab, clientId, cargarTrabajosAceptados]);
+
+    const trabajosEnProcesoIds = useMemo(() => activeTab === "ACCEPTED"
+        ? trabajosAceptados.filter((job) => job.status === "IN_PROGRESS").map((job) => job.id)
+        : [], [activeTab, trabajosAceptados]);
+
+    const marcarFinalizados = useCallback((ids: ReadonlySet<string>) => {
+        setTrabajosAceptados((jobs) => jobs.map((job) =>
+            job.status === "IN_PROGRESS" && ids.has(job.id) ? { ...job, status: "COMPLETED" } : job
+        ));
+        setRecarga((prev) => prev + 1);
+    }, []);
+
+    useCompletedJobSync(trabajosEnProcesoIds, marcarFinalizados);
+
+    async function finalizarTrabajo(job: AcceptedClientJob) {
+        if (finalizandoId || !window.confirm("¿Confirmas que el trabajo ha finalizado?")) return;
+
+        setFinalizandoId(job.id);
+        setErrorAceptados(null);
+        try {
+            await jobService.completeJob(job.id);
+            marcarFinalizados(new Set([job.id]));
+            void abrirCalificacion({ ...job, status: "COMPLETED" });
+        } catch (error) {
+            setErrorAceptados(jobErrorMessage(error, "No se pudo finalizar el trabajo.", "El trabajo ya no está en progreso."));
+        } finally {
+            setFinalizandoId(null);
+        }
+    }
+
+    // FILTRAR TRABAJOS ACEPTADOS
+    const trabajosAceptadosFiltrados = trabajosAceptados.filter((job) => {
+        const texto = busquedaAceptados.toLowerCase().trim();
+
+        if (!texto) return true;
+
+        return (
+            job.title.toLowerCase().includes(texto) ||
+            job.specialty.toLowerCase().includes(texto) ||
+            job.technicianName.toLowerCase().includes(texto) ||
+            job.districtName.toLowerCase().includes(texto)
+        );
+    });
+
+    // FECHAS
+    const formatDate = (date: string) => {
+        if (!date) return "No disponible";
+
+        return new Date(date).toLocaleDateString("es-PE", {
+            day: "numeric",
+            month: "short",
+            year: "numeric",
+        });
+    };
+
+    // APLICAR FILTROS
+    const aplicarFiltros = (event: FormEvent<HTMLFormElement>) => {
         event.preventDefault();
+
         setConsulta({
             clientId,
             createdFrom: filtros.createdFrom || undefined,
             createdTo: filtros.createdTo || undefined,
             specialty: filtros.specialty || undefined,
             status: filtros.status || undefined,
-            minBudget: filtros.minBudget === "" ? undefined : Number(filtros.minBudget),
-            maxBudget: filtros.maxBudget === "" ? undefined : Number(filtros.maxBudget),
             sortBy: filtros.sortBy,
             sortDirection: filtros.sortDirection,
             page: 0,
@@ -171,62 +402,75 @@ export default function ClientDashboardPage() {
         });
     };
 
+    // SANITIZAR TEXTO
     const sanitizarTexto = (texto: string) => {
         return texto
             .replace(/<[^>]*>?/gm, "")
             .replace(/[<>{}[\]\\^`~|]/g, "");
     };
 
+    // CAMBIOS DEL FORMULARIO
     const handleChange = (
-        e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+        e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
     ) => {
         const { name, value } = e.target;
 
         if (name === "titulo") {
             const textoSanitizado = sanitizarTexto(value);
+
             if (textoSanitizado.length <= MAX_TITULO_LENGTH) {
-                setForm({ ...form, titulo: textoSanitizado });
+                setForm((prev) => ({ ...prev, titulo: textoSanitizado }));
             }
+
             return;
         }
 
         if (name === "descripcion") {
             const textoSanitizado = sanitizarTexto(value);
+
             if (textoSanitizado.length <= MAX_DESCRIPCION_LENGTH) {
-                setForm({ ...form, descripcion: textoSanitizado });
+                setForm((prev) => ({ ...prev, descripcion: textoSanitizado }));
             }
+
             return;
         }
 
-        if (name === "presupuestoMaximo") {
-            const valorLimpio = value.replace(/[^0-9.]/g, "");
-            const partes = valorLimpio.split(".");
-            const valorFinal = partes.length > 2 ? partes[0] + "." + partes.slice(1).join("") : valorLimpio;
-
-            setForm({ ...form, presupuestoMaximo: valorFinal });
-            return;
-        }
-
-        setForm({ ...form, [name]: value });
+        setForm((prev) => ({ ...prev, [name]: value }));
     };
 
     const handleSelectOficio = (oficioValue: string) => {
         setForm((prev) => ({ ...prev, oficio: oficioValue }));
     };
 
-    // Crear o Editar publicación llamando al servicio real
-    const handleSubmit = async (e: React.FormEvent) => {
+    // REINICIAR FORMULARIO
+    const resetForm = () => {
+        setForm({
+            titulo: "",
+            descripcion: "",
+            direccion: "",
+            ubigeoDistrictId: distritos[0]?.id ?? "",
+            oficio: "ELECTRICISTA",
+        });
+    };
+
+    // CREAR PUBLICACIÓN
+    const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
         e.preventDefault();
         setErrorMessage(null);
         setSuccessMessage(null);
 
-        if (!form.presupuestoMaximo || form.presupuestoMaximo.trim() === "" || Number(form.presupuestoMaximo) <= 0) {
-            setErrorMessage("Error: Debe ingresar un valor válido para el Presupuesto Máximo.");
+        if (!clientId) {
+            setErrorMessage("No se encontró el cliente de la sesión. Inicia sesión nuevamente.");
             return;
         }
 
-        if (!clientId) {
-            setErrorMessage("No se encontró el cliente de la sesión. Inicia sesión nuevamente.");
+        if (
+            !form.titulo.trim() ||
+            !form.descripcion.trim() ||
+            !form.direccion.trim() ||
+            !form.ubigeoDistrictId
+        ) {
+            setErrorMessage("Completa todos los campos obligatorios.");
             return;
         }
 
@@ -237,58 +481,73 @@ export default function ClientDashboardPage() {
             title: form.titulo.trim(),
             specialty: form.oficio,
             description: sanitizarTexto(form.descripcion.trim()),
-            maxBudget: Number(form.presupuestoMaximo),
+            maxBudget: 2,
             ubigeoDistrictId: form.ubigeoDistrictId,
             specificAddress: form.direccion.trim(),
-            latitude: -12.046374, // Puedes enlazar geolocalización real o dejar nulo si prefieres
+            latitude: -12.046374,
             longitude: -77.042754,
         };
 
         try {
             if (modoEdicion && ofertaSeleccionada) {
-                // Aquí puedes agregar tu lógica de actualización si el backend la soporta (ej. PUT /api/v1/jobs/{id})
-                setSuccessMessage("Solicitud actualizada correctamente.");
+                setSuccessMessage(
+                    "La edición de publicaciones todavía debe conectarse al servicio correspondiente."
+                );
                 cerrarModal();
             } else {
                 await jobService.createJob(payload);
+
                 setConsulta((prev) => ({ ...prev, page: 0 }));
                 setRecarga((prev) => prev + 1);
                 setSuccessMessage("¡Tu solicitud se ha publicado exitosamente!");
+
                 resetForm();
+                setMostrarFormulario(false);
             }
         } catch (error) {
-            console.error(error);
-            setErrorMessage("Ocurrió un error al procesar la solicitud con el servidor. Inténtalo de nuevo.");
+            console.error("Error al procesar publicación:", error);
+            setErrorMessage(
+                "Ocurrió un error al procesar la solicitud con el servidor. Inténtalo de nuevo."
+            );
         } finally {
             setIsLoading(false);
         }
     };
 
+    // ELIMINAR PUBLICACIÓN
     const handleEliminar = async (id: string) => {
         if (eliminandoId || !confirm("¿Deseas eliminar este requerimiento?")) return;
 
         setEliminandoId(id);
         setErrorMessage(null);
         setSuccessMessage(null);
+
         try {
             await jobService.deleteJob(id);
-            if (ofertaSeleccionada?.id === id) cerrarModal();
+
+            if (ofertaSeleccionada?.id === id) {
+                cerrarModal();
+            }
+
             setConsulta((prev) => ({
                 ...prev,
                 page: ofertas.length === 1 ? Math.max(0, prev.page - 1) : prev.page,
             }));
+
             setRecarga((prev) => prev + 1);
             setSuccessMessage("Publicación eliminada correctamente.");
         } catch (error) {
-            console.error(error);
-            setErrorMessage("No se pudo eliminar la publicación.");
+            console.error("Error al eliminar publicación:", error);
+            setErrorMessage(jobErrorMessage(error, "No se pudo eliminar la publicación."));
         } finally {
             setEliminandoId(null);
         }
     };
 
-    const abrirDetalle = (oferta: Oferta) => {
+    // ABRIR DETALLE
+    const abrirDetalle = (oferta: Oferta, mostrarOfertas = false) => {
         setOfertaSeleccionada(oferta);
+        setEnfocarPropuestas(mostrarOfertas);
         setModoEdicion(false);
         setDetalle(null);
         setErrorDetalle(null);
@@ -301,467 +560,1408 @@ export default function ClientDashboardPage() {
         resetForm();
     };
 
-    const resetForm = () => {
-        setForm({
-            titulo: "",
-            descripcion: "",
-            direccion: "",
-            ubigeoDistrictId: distritos[0]?.id ?? "",
-            presupuestoMaximo: "",
-            oficio: "ELECTRICISTA",
-        });
+    const actualizarOfertasAceptadas = () => {
+        setRecargaDetalle((prev) => prev + 1);
+        setRecarga((prev) => prev + 1);
     };
 
-    const formatearSoles = (monto: number) => {
-        return new Intl.NumberFormat('es-PE', {
-            style: 'currency',
-            currency: 'PEN',
-            minimumFractionDigits: 2,
-        }).format(monto);
+    // CONSULTAR SI EL TRABAJO YA TIENE UNA CALIFICACIÓN
+    const abrirCalificacion = async (job: AcceptedClientJob) => {
+        if (job.status !== "COMPLETED") return;
+
+        setTrabajoCalificar(job);
+        setRatingForm(INITIAL_RATING);
+        setExistingReview(null);
+        setRatingError("");
+        setRatingFeedback("");
+        setRatingLoading(true);
+
+        try {
+            const review = await reviewService.getJobReviewByJobOffer(job.id);
+
+            setExistingReview(review);
+            setRatingForm({
+                rating: review.rating,
+                comment: review.comment ?? "",
+            });
+        } catch (error) {
+            const status = (error as { response?: { status?: number } })?.response?.status;
+
+            if (status === 404) {
+                setExistingReview(null);
+            } else {
+                console.error("Error al consultar la calificación previa:", error);
+                setRatingError(
+                    "No se pudo consultar la calificación anterior. Puedes intentar registrar tu calificación."
+                );
+            }
+        } finally {
+            setRatingLoading(false);
+        }
     };
+
+    // CERRAR MODAL DE CALIFICACIÓN
+    const cerrarCalificacion = () => {
+        if (ratingSubmitting || ratingLoading) return;
+
+        setTrabajoCalificar(null);
+        setRatingForm(INITIAL_RATING);
+        setExistingReview(null);
+        setRatingError("");
+        setRatingFeedback("");
+    };
+
+    // CALIFICAR TÉCNICO
+    const handleRatingSubmit = async (e: FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+
+        setRatingError("");
+        setRatingFeedback("");
+
+        if (!clientId) {
+            setRatingError("No se encontró la sesión del cliente. Inicia sesión nuevamente.");
+            return;
+        }
+
+        if (!trabajoCalificar) return;
+
+        if (trabajoCalificar.status !== "COMPLETED") {
+            setRatingError("Solo puedes calificar al técnico cuando el trabajo esté finalizado.");
+            return;
+        }
+
+        if (existingReview) {
+            setRatingError("Este trabajo ya tiene una calificación registrada.");
+            return;
+        }
+
+        if (ratingLoading) {
+            setRatingError("Espera mientras se consulta la calificación anterior.");
+            return;
+        }
+
+        if (ratingForm.rating < 1 || ratingForm.rating > 5) {
+            setRatingError("Selecciona una calificación de 1 a 5 estrellas.");
+            return;
+        }
+
+        if (ratingForm.comment.length > 1000) {
+            setRatingError("El comentario no puede superar los 1000 caracteres.");
+            return;
+        }
+
+        setRatingSubmitting(true);
+
+        try {
+            const review = await reviewService.createJobReview(
+                trabajoCalificar.id,
+                {
+                    rating: ratingForm.rating,
+                    comment: ratingForm.comment.trim() || undefined,
+                }
+            );
+
+            setExistingReview(review);
+            setRatingForm({
+                rating: review.rating,
+                comment: review.comment ?? "",
+            });
+
+            setRatingFeedback("¡Tu calificación se registró correctamente!");
+            setRatingError("");
+        } catch (error) {
+            const status = (error as { response?: { status?: number } })?.response?.status;
+
+            console.error("Error al registrar la calificación:", error);
+
+            if (status === 409) {
+                try {
+                    const review = await reviewService.getJobReviewByJobOffer(
+                        trabajoCalificar.id
+                    );
+
+                    setExistingReview(review);
+                    setRatingForm({
+                        rating: review.rating,
+                        comment: review.comment ?? "",
+                    });
+                    setRatingFeedback(
+                        "Este trabajo ya tenía una calificación registrada. Se muestra la calificación existente."
+                    );
+                    setRatingError("");
+                } catch (reviewError) {
+                    console.error("Error al recuperar la calificación existente:", reviewError);
+                    setRatingError(
+                        "El trabajo ya tiene una calificación, pero no se pudo recuperar."
+                    );
+                }
+            } else {
+                setRatingError(jobErrorMessage(error, "No se pudo registrar la calificación. Inténtalo nuevamente."));
+            }
+        } finally {
+            setRatingSubmitting(false);
+        }
+    };
+
+    const trabajosEnProceso = trabajosAceptados.filter(
+        (job) => job.status === "IN_PROGRESS"
+    ).length;
+
+    const trabajosCompletados = trabajosAceptados.filter(
+        (job) => job.status === "COMPLETED"
+    ).length;
 
     return (
-        <main className="min-h-screen flex flex-col bg-[#F8FAFC] font-sans text-gray-900 selection:bg-blue-100 selection:text-blue-600">
+        <main className="flex min-h-screen flex-col bg-[#F8FAFC] font-sans text-gray-900 transition-colors duration-300 selection:bg-blue-100 selection:text-blue-600 dark:bg-gray-950 dark:text-gray-100 dark:selection:bg-blue-900 dark:selection:text-blue-200">
             <Header />
 
-            {/* BANNER SUPERIOR DE COLOR AZUL VINCU */}
-            <div className="bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 text-white py-12 px-6 shadow-md relative overflow-hidden transition-all duration-500">
-                <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.15),transparent_50%)] pointer-events-none" />
-                <div className="max-w-5xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
-                    <div className="space-y-2 max-w-xl animate-fade-in">
-                        <span className="inline-flex items-center gap-2 px-3.5 py-1 rounded-full bg-white/10 border border-white/20 text-blue-100 text-xs font-semibold backdrop-blur-md shadow-sm">
-                            <span className="w-1.5 h-1.5 rounded-full bg-blue-300 animate-pulse" />
+            {/* BANNER SUPERIOR */}
+            <div className="relative overflow-hidden bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 px-6 py-12 text-white shadow-md">
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.15),transparent_50%)]" />
+
+                <div className="relative z-10 mx-auto flex max-w-5xl flex-col justify-between gap-6 md:flex-row md:items-center">
+                    <div className="max-w-xl space-y-2">
+                        <span className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3.5 py-1 text-xs font-semibold text-blue-100 shadow-sm backdrop-blur-md">
+                            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-300" />
                             Portal de Solicitudes - Cliente
                         </span>
-                        <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight">
-                            ¿Qué necesitas reparar hoy?
+
+                        <h1 className="text-3xl font-extrabold tracking-tight md:text-4xl">
+                            {activeTab === "PUBLICATIONS"
+                                ? "¿Qué necesitas reparar hoy?"
+                                : "Seguimiento de tus trabajos"}
                         </h1>
-                        <p className="text-blue-100 text-sm leading-relaxed">
-                            Publica tu requerimiento de forma sencilla y recibe cotizaciones de profesionales calificados cerca de ti.
+
+                        <p className="text-sm leading-relaxed text-blue-100">
+                            {activeTab === "PUBLICATIONS"
+                                ? "Publica tu requerimiento, revisa las propuestas y encuentra profesionales para tus servicios."
+                                : "Consulta los trabajos aceptados, revisa su avance y califica al técnico cuando finalice el servicio."}
                         </p>
                     </div>
 
-                    <div className="flex items-center gap-3">
-                        <div className="px-5 py-3.5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 text-center min-w-[110px] transform hover:scale-105 transition-all duration-300 shadow-sm">
-                            <span className="block text-2xl font-black text-white">{total}</span>
-                            <span className="text-[11px] font-medium text-blue-200 uppercase tracking-wider">Resultados</span>
-                        </div>
-                        <div className="px-5 py-3.5 bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 text-center min-w-[110px] transform hover:scale-105 transition-all duration-300 shadow-sm">
-                            <span className="block text-2xl font-black text-blue-300">
-                                {ofertas.filter((o) => o.estado === "ACTIVA").length}
+                    <div className="flex flex-wrap items-center gap-3">
+                        <div className="min-w-[110px] rounded-2xl border border-white/20 bg-white/10 px-5 py-3.5 text-center shadow-sm backdrop-blur-md">
+                            <span className="block text-2xl font-black text-white">
+                                {activeTab === "PUBLICATIONS" ? total : trabajosAceptados.length}
                             </span>
-                            <span className="text-[11px] font-medium text-blue-200 uppercase tracking-wider">Activas en esta página</span>
+                            <span className="text-[11px] font-medium uppercase tracking-wider text-blue-200">
+                                {activeTab === "PUBLICATIONS" ? "Publicaciones" : "Aceptados"}
+                            </span>
+                        </div>
+
+                        <div className="min-w-[110px] rounded-2xl border border-white/20 bg-white/10 px-5 py-3.5 text-center shadow-sm backdrop-blur-md">
+                            <span className="block text-2xl font-black text-blue-300">
+                                {activeTab === "PUBLICATIONS"
+                                    ? ofertas.filter((o) => o.estado === "ACTIVA").length
+                                    : trabajosEnProceso}
+                            </span>
+                            <span className="text-[11px] font-medium uppercase tracking-wider text-blue-200">
+                                {activeTab === "PUBLICATIONS" ? "Activas en esta página" : "En proceso"}
+                            </span>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <section className="flex-1 max-w-5xl w-full mx-auto px-4 py-8 md:py-10 space-y-10">
+            <section className="mx-auto w-full max-w-5xl flex-1 space-y-8 px-4 py-8 md:py-10">
+                {/* PESTAÑAS */}
+                <div className="flex flex-col gap-2 rounded-2xl border border-gray-200 bg-white p-2 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setActiveTab("PUBLICATIONS");
+                                setErrorMessage(null);
+                                setSuccessMessage(null);
+                            }}
+                            className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition ${
+                                activeTab === "PUBLICATIONS"
+                                    ? "bg-blue-600 text-white shadow-md"
+                                    : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                            }`}
+                        >
+                            📋 Mis publicaciones
+                            <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">
+                                {total}
+                            </span>
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setActiveTab("ACCEPTED");
+                                setErrorMessage(null);
+                                setSuccessMessage(null);
+                            }}
+                            className={`flex flex-1 items-center justify-center gap-2 rounded-xl px-5 py-3.5 text-sm font-semibold transition ${
+                                activeTab === "ACCEPTED"
+                                    ? "bg-blue-600 text-white shadow-md"
+                                    : "text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                            }`}
+                        >
+                            🛠️ Trabajos aceptados
+                            <span className="rounded-full bg-white/20 px-2 py-0.5 text-xs">
+                                {trabajosAceptados.length}
+                            </span>
+                        </button>
+                    </div>
+                </div>
+
+                {/* MENSAJES GENERALES */}
                 {errorMessage && (
-                    <div className="p-4 rounded-2xl text-xs font-semibold bg-red-50 text-red-600 border border-red-100 text-center animate-bounce">
+                    <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-center text-xs font-semibold text-red-600 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
                         {errorMessage}
                     </div>
                 )}
+
                 {successMessage && (
-                    <div className="p-4 rounded-2xl text-xs font-semibold bg-emerald-50 text-emerald-600 border border-emerald-100 text-center transition-all duration-300">
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-center text-xs font-semibold text-emerald-600 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-300">
                         {successMessage}
                     </div>
                 )}
 
-                {/* FORMULARIO DE CREACIÓN */}
-                <div className="bg-white rounded-3xl border border-gray-200/70 shadow-sm p-6 md:p-10 space-y-8 transition-all duration-300 hover:shadow-md">
-                    <div>
-                        <h2 className="text-xl font-bold tracking-tight text-gray-900">Crear nueva solicitud</h2>
-                        <p className="text-xs text-gray-400 mt-1">Completa los campos principales de tu requerimiento.</p>
-                    </div>
-
-                    <form onSubmit={handleSubmit} className="space-y-8">
-                        <div className="space-y-3">
-                            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
-                                Especialidad Requerida *
-                            </label>
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
-                                {OFICIOS_DISPONIBLES.map((item) => (
-                                    <button
-                                        key={item.id}
-                                        type="button"
-                                        onClick={() => handleSelectOficio(item.value)}
-                                        className={`p-3.5 rounded-2xl border text-center flex flex-col items-center justify-center gap-2 transition-all duration-300 transform hover:-translate-y-1 ${
-                                            form.oficio === item.value
-                                                ? "border-blue-600 bg-blue-50/70 text-blue-600 font-bold shadow-md ring-2 ring-blue-600/10 scale-[1.02]"
-                                                : "border-gray-200/80 hover:border-blue-200 text-gray-600 hover:bg-gray-50/80"
-                                        }`}
-                                    >
-                                        <span className="text-2xl transition-transform duration-300 group-hover:scale-110">{item.icon}</span>
-                                        <span className="text-xs">{item.label}</span>
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="space-y-2">
-                                <div className="flex justify-between items-center">
-                                    <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
-                                        Título de la Solicitud *
-                                    </label>
-                                    <span className={`text-[11px] font-medium ${form.titulo.length >= MAX_TITULO_LENGTH ? "text-red-500 font-bold" : "text-gray-400"}`}>
-                                        {form.titulo.length} / {MAX_TITULO_LENGTH}
+                {/* PESTAÑA: PUBLICACIONES */}
+                {activeTab === "PUBLICATIONS" && (
+                    <div className="space-y-6">
+                        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-100 text-lg dark:bg-blue-950/60">
+                                        📋
                                     </span>
+                                    <h2 className="text-xl font-bold tracking-tight text-gray-900 dark:text-white">
+                                        Tus Solicitudes Creadas
+                                    </h2>
                                 </div>
-                                <input
-                                    type="text"
-                                    name="titulo"
-                                    value={form.titulo}
-                                    onChange={handleChange}
-                                    placeholder="Ej. Reparación de fuga en baño"
-                                    required
-                                    className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all duration-300 outline-none"
-                                />
+                                <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+                                    Administra tus requerimientos y consulta las propuestas recibidas.
+                                </p>
                             </div>
 
-                            <div className="space-y-2">
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
-                                    Presupuesto Máximo *
-                                </label>
-                                <div className="relative">
-                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-sm">
-                                        S/
-                                    </span>
-                                    <input
-                                        type="text"
-                                        inputMode="decimal"
-                                        name="presupuestoMaximo"
-                                        value={form.presupuestoMaximo}
-                                        onChange={handleChange}
-                                        placeholder="150.00"
-                                        required
-                                        className="w-full pl-10 pr-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all duration-300 outline-none font-medium"
-                                    />
-                                </div>
-                                {form.presupuestoMaximo && !isNaN(Number(form.presupuestoMaximo)) && (
-                                    <p className="text-[11px] text-blue-600 font-semibold pl-1">
-                                        Formato visual: {formatearSoles(Number(form.presupuestoMaximo))}
-                                    </p>
-                                )}
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="space-y-2">
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
-                                    Dirección Exacta del Servicio *
-                                </label>
-                                <input
-                                    type="text"
-                                    name="direccion"
-                                    value={form.direccion}
-                                    onChange={handleChange}
-                                    placeholder="Ej. Av. Los Ingenieros 245"
-                                    required
-                                    className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all duration-300 outline-none"
-                                />
-                            </div>
-
-                            <div className="space-y-2">
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
-                                    Distrito *
-                                </label>
-                                <select
-                                    name="ubigeoDistrictId"
-                                    value={form.ubigeoDistrictId}
-                                    onChange={handleChange}
-                                    required
-                                    className="w-full px-4 py-3 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all duration-300 outline-none"
-                                >
-                                    <option value="" disabled>Selecciona un distrito</option>
-                                    {distritos.map((dist) => (
-                                        <option key={dist.id} value={dist.id}>
-                                            {dist.name}
-                                        </option>
-                                    ))}
-                                </select>
-                            </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <div className="flex justify-between items-center">
-                                <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500">
-                                    Descripción Detallada *
-                                </label>
-                                <span className={`text-[11px] font-medium ${form.descripcion.length >= MAX_DESCRIPCION_LENGTH ? "text-red-500 font-bold" : "text-gray-400"}`}>
-                                    {form.descripcion.length} / {MAX_DESCRIPCION_LENGTH} caracteres
+                            <div className="flex flex-wrap items-center gap-3">
+                                <span className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-600 dark:border-blue-900 dark:bg-blue-950/50 dark:text-blue-300">
+                                    {ofertas.length} de {total} requerimientos
                                 </span>
-                            </div>
-                            <textarea
-                                name="descripcion"
-                                rows={5}
-                                value={form.descripcion}
-                                onChange={handleChange}
-                                placeholder="Detalla qué problemas se presentan o qué trabajo específico requieres realizar..."
-                                required
-                                className="w-full min-h-[120px] max-h-[250px] p-4 bg-gray-50/50 border border-gray-200 rounded-2xl text-sm focus:bg-white focus:border-blue-600 focus:ring-4 focus:ring-blue-600/10 transition-all duration-300 outline-none resize-y"
-                            />
-                        </div>
 
-                        <button
-                            type="submit"
-                            disabled={isLoading || !clientId}
-                            className="w-full md:w-auto px-8 py-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-2xl transition-all duration-300 transform hover:scale-[1.02] active:scale-95 shadow-lg shadow-blue-600/20 hover:shadow-blue-600/30 text-sm disabled:opacity-50"
-                        >
-                            {isLoading ? "Publicando..." : "Publicar Solicitud"}
-                        </button>
-                    </form>
-                </div>
-
-                {/* VISTA DE SOLICITUDES CREADAS */}
-                <div className="space-y-6">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                        <div>
-                            <h2 className="text-xl font-bold tracking-tight text-gray-900">Tus Solicitudes Creadas</h2>
-                            <p className="text-xs text-gray-400 mt-0.5">Administra tu lista de requerimientos y consulta las ofertas recibidas.</p>
-                        </div>
-                        <span className="text-xs font-semibold text-blue-600 bg-blue-50 border border-blue-100 px-3 py-1.5 rounded-full self-start sm:self-auto">
-                            {ofertas.length} de {total} requerimientos
-                        </span>
-                    </div>
-
-                    <form onSubmit={aplicarFiltros} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 bg-white p-4 rounded-2xl border border-gray-200/70 shadow-sm">
-                        {([
-                            ["createdFrom", "Creada desde", "date"],
-                            ["createdTo", "Creada hasta", "date"],
-                            ["minBudget", "Presupuesto mínimo (S/)", "number"],
-                            ["maxBudget", "Presupuesto máximo (S/)", "number"],
-                        ] as const).map(([name, label, type]) => (
-                            <label key={name} className="text-xs font-semibold text-gray-600 space-y-2">
-                                <span>{label}</span>
-                                <input type={type} value={filtros[name]} min={type === "number" ? (name === "maxBudget" ? filtros.minBudget || "0" : "0") : name === "createdTo" ? filtros.createdFrom : undefined} step={type === "number" ? "0.01" : undefined}
-                                    onChange={(e) => setFiltros((prev) => ({ ...prev, [name]: e.target.value }))}
-                                    className="block w-full p-2 border border-gray-200 rounded-xl" />
-                            </label>
-                        ))}
-                        <label className="text-xs font-semibold text-gray-600 space-y-2">
-                            <span>Oficio</span>
-                            <select value={filtros.specialty} onChange={(e) => setFiltros((prev) => ({ ...prev, specialty: e.target.value }))} className="block w-full p-2 border border-gray-200 rounded-xl">
-                                <option value="">Todos</option>
-                                {OFICIOS_DISPONIBLES.map((oficio) => <option key={oficio.value} value={oficio.value}>{oficio.label}</option>)}
-                            </select>
-                        </label>
-                        <label className="text-xs font-semibold text-gray-600 space-y-2">
-                            <span>Estado (opcional)</span>
-                            <select value={filtros.status} onChange={(e) => setFiltros((prev) => ({ ...prev, status: e.target.value }))} className="block w-full p-2 border border-gray-200 rounded-xl">
-                                <option value="">Todos</option>
-                                <option value="OPEN">Publicada</option>
-                                <option value="IN_PROGRESS">En progreso</option>
-                                <option value="COMPLETED">Completada</option>
-                                <option value="CANCELED">Cancelada</option>
-                            </select>
-                        </label>
-                        <label className="text-xs font-semibold text-gray-600 space-y-2">
-                            <span>Ordenar por</span>
-                            <select value={filtros.sortBy} onChange={(e) => setFiltros((prev) => ({ ...prev, sortBy: e.target.value }))} className="block w-full p-2 border border-gray-200 rounded-xl">
-                                <option value="createdAt">Fecha de creación</option>
-                                <option value="maxBudget">Presupuesto máximo</option>
-                            </select>
-                        </label>
-                        <label className="text-xs font-semibold text-gray-600 space-y-2">
-                            <span>Dirección del orden</span>
-                            <select value={filtros.sortDirection} onChange={(e) => setFiltros((prev) => ({ ...prev, sortDirection: e.target.value as "ASC" | "DESC" }))} className="block w-full p-2 border border-gray-200 rounded-xl">
-                                <option value="DESC">Descendente</option><option value="ASC">Ascendente</option>
-                            </select>
-                        </label>
-                        <label className="text-xs font-semibold text-gray-600 space-y-2">
-                            <span>Solicitudes por página</span>
-                            <select value={filtros.size} onChange={(e) => setFiltros((prev) => ({ ...prev, size: e.target.value }))} className="block w-full p-2 border border-gray-200 rounded-xl">
-                                {[10, 20, 50].map((size) => <option key={size} value={size}>{size}</option>)}
-                            </select>
-                        </label>
-                        <div className="flex gap-3 sm:col-span-2 lg:col-span-3">
-                            <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold">Aplicar filtros</button>
-                            <button type="button" onClick={() => { setFiltros(FILTROS_INICIALES); setConsulta({ clientId, sortBy: "createdAt", sortDirection: "DESC", page: 0, size: 10 }); }} className="px-4 py-2 bg-gray-100 rounded-xl text-xs font-semibold">Limpiar filtros</button>
-                        </div>
-                    </form>
-
-                    {cargandoLista ? <p role="status" className="text-sm text-gray-500">Cargando solicitudes...</p> : errorLista ? (
-                        <div role="alert" className="p-4 bg-red-50 text-red-600 rounded-xl text-sm">
-                            {errorLista}
-                            <button type="button" onClick={() => setRecarga((prev) => prev + 1)} className="ml-3 underline">Reintentar</button>
-                        </div>
-                    ) : ofertas.length === 0 ? (
-                        <div className="bg-white rounded-3xl border border-gray-200/70 p-12 text-center space-y-3 transition-all duration-300">
-                            <p className="text-gray-300 text-4xl">📂</p>
-                            <p className="text-sm font-semibold text-gray-600">No se encontraron solicitudes</p>
-                            <p className="text-xs text-gray-400">Intenta cambiar los filtros o publica un nuevo requerimiento.</p>
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-1 gap-4">
-                            {ofertas.map((item) => (
-                                <div
-                                    key={item.id}
-                                    className="group bg-white rounded-3xl border border-gray-200/70 p-6 hover:border-blue-300 hover:shadow-lg transition-all duration-300 transform hover:-translate-y-1 flex flex-col md:flex-row justify-between items-start md:items-center gap-6"
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setMostrarFormulario((prev) => !prev);
+                                        setErrorMessage(null);
+                                        setSuccessMessage(null);
+                                    }}
+                                    className={`flex items-center gap-2 rounded-xl px-5 py-3 text-xs font-bold shadow-lg transition-all hover:-translate-y-0.5 active:scale-95 ${
+                                        mostrarFormulario
+                                            ? "border border-gray-200 bg-white text-gray-600 shadow-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                                            : "bg-blue-600 text-white shadow-blue-600/20 hover:bg-blue-700"
+                                    }`}
                                 >
-                                    <div className="space-y-3 flex-1">
-                                        <div className="flex items-center gap-2 flex-wrap">
-                                            <span className="px-3 py-1 rounded-full bg-gray-100 text-gray-700 text-xs font-semibold transition-colors group-hover:bg-blue-50 group-hover:text-blue-600">
-                                                {item.specialty}
-                                            </span>
-                                            <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                                                item.estado === "ACTIVA"
-                                                    ? "bg-emerald-50 text-emerald-600"
-                                                    : item.estado === "EN_PROCESO"
-                                                        ? "bg-amber-50 text-amber-600"
-                                                        : "bg-gray-100 text-gray-500"
-                                            }`}>
-                                                {item.estado}
-                                            </span>
-                                            <span className="text-xs text-gray-400">Creado el {item.fechaCreacion}</span>
-                                        </div>
+                                    <span className="text-lg">
+                                        {mostrarFormulario ? "✕" : "+"}
+                                    </span>
+                                    {mostrarFormulario ? "Cerrar formulario" : "Crear publicación"}
+                                </button>
+                            </div>
+                        </div>
 
-                                        <div>
-                                            <h3 className="text-base font-bold text-gray-900 group-hover:text-blue-600 transition-colors duration-200">
-                                                {item.title}
-                                            </h3>
-                                            <p className="text-xs text-gray-500 line-clamp-2 mt-1 leading-relaxed">
-                                                {item.description}
-                                            </p>
-                                        </div>
+                        {/* FORMULARIO DESPLEGABLE */}
+                        {mostrarFormulario && (
+                            <div className="space-y-8 rounded-3xl border border-blue-100 bg-white p-6 shadow-sm dark:border-blue-900/50 dark:bg-gray-900 md:p-10">
+                                <div className="flex items-start gap-2 border-b border-gray-100 pb-5 dark:border-gray-800">
+                                    <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-xl dark:bg-blue-950/60">
+                                        ✨
+                                    </span>
+                                    <div>
+                                        <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+                                            Crear nueva solicitud
+                                        </h2>
+                                        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                                            Completa los campos principales de tu requerimiento.
+                                        </p>
+                                    </div>
+                                </div>
 
-                                        <div className="flex items-center gap-4 text-xs text-gray-400">
-                                            <div className="flex items-center gap-1">
-                                                <span>📍</span>
-                                                <span className="font-medium text-gray-600">{[item.specificAddress, item.nombreDistrito ?? distritos.find((distrito) => distrito.id === item.ubigeoDistrictId)?.name].filter(Boolean).join(", ") || "Distrito no disponible"}</span>
-                                            </div>
-                                            <div className="flex items-center gap-1 text-blue-600 font-semibold">
-                                                <span>💬</span>
-                                                <span>{item.propuestasCount} propuestas</span>
-                                            </div>
+                                <form onSubmit={handleSubmit} className="space-y-8">
+                                    <div className="space-y-3">
+                                        <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                            Especialidad Requerida *
+                                        </label>
+
+                                        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-6">
+                                            {OFICIOS_DISPONIBLES.map((item) => (
+                                                <button
+                                                    key={item.id}
+                                                    type="button"
+                                                    onClick={() => handleSelectOficio(item.value)}
+                                                    className={`flex flex-col items-center justify-center gap-2 rounded-2xl border p-3.5 text-center transition-all hover:-translate-y-1 ${
+                                                        form.oficio === item.value
+                                                            ? "scale-[1.02] border-blue-600 bg-blue-50/70 font-bold text-blue-600 shadow-md ring-2 ring-blue-600/10 dark:border-blue-500 dark:bg-blue-950/50 dark:text-blue-300"
+                                                            : "border-gray-200/80 text-gray-600 hover:border-blue-200 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                                                    }`}
+                                                >
+                                                    <span className="text-2xl">{item.icon}</span>
+                                                    <span className="text-xs">{item.label}</span>
+                                                </button>
+                                            ))}
                                         </div>
                                     </div>
 
-                                    <div className="flex md:flex-col justify-between md:items-end w-full md:w-auto border-t md:border-t-0 border-gray-100 pt-4 md:pt-0 gap-4">
-                                        <div className="text-left md:text-right">
-                                            <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wider block">
-                                                Presupuesto Máximo
-                                            </span>
-                                            <span className="text-xl font-black text-gray-900">
-                                                {formatearSoles(item.maxBudget)}
-                                            </span>
+                                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <div className="flex items-center justify-between">
+                                                <label className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                                    Título de la Solicitud *
+                                                </label>
+                                                <span className="text-[11px] text-gray-400">
+                                                    {form.titulo.length}/{MAX_TITULO_LENGTH}
+                                                </span>
+                                            </div>
+                                            <input
+                                                type="text"
+                                                name="titulo"
+                                                value={form.titulo}
+                                                onChange={handleChange}
+                                                placeholder="Ej. Reparación de fuga en baño"
+                                                required
+                                                className={inputClass}
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                                        <div className="space-y-2">
+                                            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                                Dirección Exacta del Servicio *
+                                            </label>
+                                            <input
+                                                type="text"
+                                                name="direccion"
+                                                value={form.direccion}
+                                                onChange={handleChange}
+                                                placeholder="Ej. Av. Los Ingenieros 245"
+                                                required
+                                                className={inputClass}
+                                            />
                                         </div>
 
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => abrirDetalle(item)}
-                                                className="px-4 py-2 bg-gray-100 hover:bg-blue-600 text-gray-700 hover:text-white text-xs font-bold rounded-xl transition-all duration-300 transform hover:scale-105 active:scale-95 shadow-sm"
+                                        <div className="space-y-2">
+                                            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                                Distrito *
+                                            </label>
+                                            <select
+                                                name="ubigeoDistrictId"
+                                                value={form.ubigeoDistrictId}
+                                                onChange={handleChange}
+                                                required
+                                                className={inputClass}
                                             >
-                                                Ver
-                                            </button>
+                                                <option value="" disabled>
+                                                    Selecciona un distrito
+                                                </option>
+                                                {distritos.map((dist) => (
+                                                    <option key={dist.id} value={dist.id}>
+                                                        {dist.name}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <div className="flex items-center justify-between">
+                                            <label className="block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                                Descripción Detallada *
+                                            </label>
+                                            <span className="text-[11px] text-gray-400">
+                                                {form.descripcion.length}/{MAX_DESCRIPCION_LENGTH} caracteres
+                                            </span>
+                                        </div>
+                                        <textarea
+                                            name="descripcion"
+                                            rows={5}
+                                            value={form.descripcion}
+                                            onChange={handleChange}
+                                            placeholder="Detalla qué problemas se presentan o qué trabajo específico requieres realizar..."
+                                            required
+                                            className={`${inputClass} min-h-[120px] max-h-[250px] resize-y p-4`}
+                                        />
+                                    </div>
+
+                                    <div className="flex flex-col-reverse gap-3 border-t border-gray-100 pt-6 dark:border-gray-800 sm:flex-row sm:justify-end">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                resetForm();
+                                                setMostrarFormulario(false);
+                                            }}
+                                            className="rounded-2xl border border-gray-200 bg-white px-6 py-3.5 text-sm font-semibold text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                                        >
+                                            Cancelar
+                                        </button>
+                                        <button
+                                            type="submit"
+                                            disabled={isLoading || !clientId}
+                                            className="rounded-2xl bg-blue-600 px-8 py-3.5 text-sm font-bold text-white shadow-lg hover:bg-blue-700 disabled:opacity-50"
+                                        >
+                                            {isLoading ? "Publicando..." : "Publicar Solicitud"}
+                                        </button>
+                                    </div>
+                                </form>
+                            </div>
+                        )}
+
+                        {/* FILTROS */}
+                        <form
+                            onSubmit={aplicarFiltros}
+                            className="grid grid-cols-1 gap-4 rounded-2xl border border-gray-200/70 bg-white p-4 shadow-sm dark:border-gray-800 dark:bg-gray-900 sm:grid-cols-2 lg:grid-cols-3"
+                        >
+                            {([
+                                ["createdFrom", "Creada desde", "date"],
+                                ["createdTo", "Creada hasta", "date"],
+                            ] as const).map(([name, label, type]) => (
+                                <label
+                                    key={name}
+                                    className="space-y-2 text-xs font-semibold text-gray-600 dark:text-gray-300"
+                                >
+                                    <span>{label}</span>
+                                    <input
+                                        type={type}
+                                        value={filtros[name]}
+                                        min={name === "createdTo" ? filtros.createdFrom : undefined}
+                                        onChange={(e) =>
+                                            setFiltros((prev) => ({
+                                                ...prev,
+                                                [name]: e.target.value,
+                                            }))
+                                        }
+                                        className={filterInputClass}
+                                    />
+                                </label>
+                            ))}
+
+                            <label className="space-y-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                                <span>Oficio</span>
+                                <select
+                                    value={filtros.specialty}
+                                    onChange={(e) =>
+                                        setFiltros((prev) => ({
+                                            ...prev,
+                                            specialty: e.target.value,
+                                        }))
+                                    }
+                                    className={filterInputClass}
+                                >
+                                    <option value="">Todos</option>
+                                    {OFICIOS_DISPONIBLES.map((oficio) => (
+                                        <option key={oficio.value} value={oficio.value}>
+                                            {oficio.label}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+
+                            <label className="space-y-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                                <span>Estado</span>
+                                <select
+                                    value={filtros.status}
+                                    onChange={(e) =>
+                                        setFiltros((prev) => ({
+                                            ...prev,
+                                            status: e.target.value,
+                                        }))
+                                    }
+                                    className={filterInputClass}
+                                >
+                                    <option value="">Todos</option>
+                                    <option value="OPEN">Publicada</option>
+                                    <option value="IN_PROGRESS">En progreso</option>
+                                    <option value="COMPLETED">Completada</option>
+                                    <option value="CANCELED">Cancelada</option>
+                                </select>
+                            </label>
+
+                            <label className="space-y-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                                <span>Ordenar por</span>
+                                <select
+                                    value={filtros.sortBy}
+                                    onChange={(e) =>
+                                        setFiltros((prev) => ({
+                                            ...prev,
+                                            sortBy: e.target.value,
+                                        }))
+                                    }
+                                    className={filterInputClass}
+                                >
+                                    <option value="createdAt">Fecha de creación</option>
+                                </select>
+                            </label>
+
+                            <label className="space-y-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                                <span>Dirección del orden</span>
+                                <select
+                                    value={filtros.sortDirection}
+                                    onChange={(e) =>
+                                        setFiltros((prev) => ({
+                                            ...prev,
+                                            sortDirection: e.target.value as "ASC" | "DESC",
+                                        }))
+                                    }
+                                    className={filterInputClass}
+                                >
+                                    <option value="DESC">Descendente</option>
+                                    <option value="ASC">Ascendente</option>
+                                </select>
+                            </label>
+
+                            <label className="space-y-2 text-xs font-semibold text-gray-600 dark:text-gray-300">
+                                <span>Solicitudes por página</span>
+                                <select
+                                    value={filtros.size}
+                                    onChange={(e) =>
+                                        setFiltros((prev) => ({
+                                            ...prev,
+                                            size: e.target.value,
+                                        }))
+                                    }
+                                    className={filterInputClass}
+                                >
+                                    {[10, 20, 50].map((size) => (
+                                        <option key={size} value={size}>
+                                            {size}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+
+                            <div className="flex gap-3 sm:col-span-2 lg:col-span-3">
+                                <button
+                                    type="submit"
+                                    className="rounded-xl bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700"
+                                >
+                                    Aplicar filtros
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setFiltros(FILTROS_INICIALES);
+                                        setConsulta({
+                                            clientId,
+                                            sortBy: "createdAt",
+                                            sortDirection: "DESC",
+                                            page: 0,
+                                            size: 10,
+                                        });
+                                    }}
+                                    className="rounded-xl bg-gray-100 px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200"
+                                >
+                                    Limpiar filtros
+                                </button>
+                            </div>
+                        </form>
+
+                        {/* LISTADO DE PUBLICACIONES */}
+                        {cargandoLista ? (
+                            <div className="rounded-2xl border border-gray-200 bg-white p-10 text-center dark:border-gray-800 dark:bg-gray-900">
+                                <p role="status" className="text-sm text-gray-500 dark:text-gray-400">
+                                    Cargando solicitudes...
+                                </p>
+                            </div>
+                        ) : errorLista ? (
+                            <div
+                                role="alert"
+                                className="rounded-xl bg-red-50 p-4 text-sm text-red-600 dark:bg-red-950/40 dark:text-red-300"
+                            >
+                                {errorLista}
+                                <button
+                                    type="button"
+                                    onClick={() => setRecarga((prev) => prev + 1)}
+                                    className="ml-3 underline"
+                                >
+                                    Reintentar
+                                </button>
+                            </div>
+                        ) : ofertas.length === 0 ? (
+                            <div className="space-y-3 rounded-3xl border border-gray-200/70 bg-white p-12 text-center dark:border-gray-800 dark:bg-gray-900">
+                                <p className="text-4xl text-gray-300 dark:text-gray-600">📂</p>
+                                <p className="text-sm font-semibold text-gray-600 dark:text-gray-300">
+                                    No se encontraron solicitudes
+                                </p>
+                                <p className="text-xs text-gray-400 dark:text-gray-500">
+                                    Intenta cambiar los filtros o publica un nuevo requerimiento.
+                                </p>
+                                {!mostrarFormulario && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setMostrarFormulario(true)}
+                                        className="mt-3 rounded-xl bg-blue-600 px-5 py-3 text-xs font-bold text-white hover:bg-blue-700"
+                                    >
+                                        + Crear mi primera publicación
+                                    </button>
+                                )}
+                            </div>
+                        ) : (
+
+                            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                                {ofertas.map((item) => {
+                                    const propuestasCount = item.propuestasCount;
+
+                                    const estadoDisponible = item.estado === "ACTIVA";
+
+                                    return (
+                                        <article
+                                            key={item.id}
+                                            className="flex flex-col rounded-2xl border border-gray-200 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md dark:border-gray-800 dark:bg-gray-900"
+                                        >
+                                            {/* ESPECIALIDAD Y ESTADO */}
+                                            <div className="mb-4 flex items-start justify-between gap-3">
+                    <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                        {item.specialty}
+                    </span>
+
+                                                <span
+                                                    className={`rounded-full px-3 py-1 text-xs font-medium ${
+                                                        estadoDisponible
+                                                            ? "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300"
+                                                            : item.estado === "EN PROCESO"
+                                                                ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                                                                : item.estado === "COMPLETADA"
+                                                                    ? "bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                                                                    : "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300"
+                                                    }`}
+                                                >
+                        {item.estado}
+                    </span>
+                                            </div>
+
+                                            {/* TÍTULO Y DESCRIPCIÓN */}
+                                            <h3 className="mb-2 text-lg font-bold text-gray-900 dark:text-white">
+                                                {item.title}
+                                            </h3>
+
+                                            <p className="mb-4 line-clamp-3 flex-1 text-sm leading-relaxed text-gray-600 dark:text-gray-400">
+                                                {item.description ||
+                                                    "No agregaste una descripción para esta solicitud."}
+                                            </p>
+
+                                            {/* INFORMACIÓN */}
+                                            <div className="space-y-3 border-t border-gray-100 pt-4 dark:border-gray-800">
+                                                <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">
+                            Ubicación
+                        </span>
+                                                    <span className="max-w-[65%] text-right font-medium text-gray-900 dark:text-gray-200">
+                            {[
+                                item.specificAddress,
+                                item.nombreDistrito ??
+                                distritos.find(
+                                    (distrito) =>
+                                        distrito.id === item.ubigeoDistrictId
+                                )?.name,
+                            ]
+                                .filter(Boolean)
+                                .join(", ") || "Distrito no disponible"}
+                        </span>
+                                                </div>
+
+                                                <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">
+                            Publicado
+                        </span>
+                                                    <span className="font-medium text-gray-900 dark:text-gray-200">
+                            {item.fechaCreacion}
+                        </span>
+                                                </div>
+
+                                                <div className="flex items-center justify-between gap-2 text-sm">
+                        <span className="text-gray-500 dark:text-gray-400">
+                            Propuestas
+                        </span>
+                                                    <span className="font-semibold text-blue-600 dark:text-blue-400">
+                            {propuestasCount}
+                        </span>
+                                                </div>
+                                            </div>
+
+                                            {/* BOTONES */}
+                                            <div className="mt-5 grid grid-cols-2 gap-3">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => abrirDetalle(item)}
+                                                    className="rounded-xl border border-gray-300 px-3 py-3 text-sm font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                                                >
+                                                    Ver detalles
+                                                </button>
+
+                                                <button
+                                                    type="button"
+                                                    onClick={() => abrirDetalle(item, true)}
+                                                    className="rounded-xl bg-blue-600 px-3 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+                                                >
+                                                    Ver propuestas
+                                                </button>
+                                            </div>
+
+                                            {/* ELIMINAR */}
                                             <button
                                                 type="button"
                                                 onClick={() => handleEliminar(item.id)}
                                                 disabled={eliminandoId !== null}
-                                                className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all duration-300 transform hover:scale-110 text-xs disabled:opacity-50"
-                                                title="Eliminar"
+                                                className="mt-3 w-full rounded-xl border border-red-200 px-3 py-2.5 text-xs font-semibold text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/30"
                                             >
-                                                ✕
+                                                {eliminandoId === item.id
+                                                    ? "Eliminando..."
+                                                    : "Eliminar publicación"}
                                             </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
+                                        </article>
+                                    );
+                                })}
+                            </div>
+
+                        )}
+
+                        {/* PAGINACIÓN */}
+                        <div className="flex items-center justify-between gap-3 text-xs text-gray-600 dark:text-gray-300">
+                            <button
+                                type="button"
+                                disabled={cargandoLista || consulta.page === 0}
+                                onClick={() =>
+                                    setConsulta((prev) => ({
+                                        ...prev,
+                                        page: prev.page - 1,
+                                    }))
+                                }
+                                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                            >
+                                Anterior
+                            </button>
+                            <span>
+                                Página {totalPaginas === 0 ? 0 : consulta.page + 1} de {totalPaginas}
+                            </span>
+                            <button
+                                type="button"
+                                disabled={cargandoLista || consulta.page + 1 >= totalPaginas}
+                                onClick={() =>
+                                    setConsulta((prev) => ({
+                                        ...prev,
+                                        page: prev.page + 1,
+                                    }))
+                                }
+                                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                            >
+                                Siguiente
+                            </button>
                         </div>
-                    )}
-                    <div className="flex items-center justify-between gap-3 text-xs">
-                        <button type="button" disabled={cargandoLista || consulta.page === 0} onClick={() => setConsulta((prev) => ({ ...prev, page: prev.page - 1 }))} className="px-4 py-2 bg-white border rounded-xl disabled:opacity-40">Anterior</button>
-                        <span>Página {totalPaginas === 0 ? 0 : consulta.page + 1} de {totalPaginas}</span>
-                        <button type="button" disabled={cargandoLista || consulta.page + 1 >= totalPaginas} onClick={() => setConsulta((prev) => ({ ...prev, page: prev.page + 1 }))} className="px-4 py-2 bg-white border rounded-xl disabled:opacity-40">Siguiente</button>
                     </div>
-                </div>
+                )}
+
+                {/* PESTAÑA: TRABAJOS ACEPTADOS */}
+                {activeTab === "ACCEPTED" && (
+                    <div className="space-y-6">
+                        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-blue-100 text-lg dark:bg-blue-950/60">
+                                        🛠️
+                                    </span>
+                                    <h2 className="text-xl font-bold text-gray-900 dark:text-white">
+                                        Trabajos aceptados
+                                    </h2>
+                                </div>
+                                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                    Aquí puedes revisar el avance de los servicios con propuestas aceptadas o técnicos asignados.
+                                </p>
+                            </div>
+
+                            <button
+                                type="button"
+                                onClick={() => void cargarTrabajosAceptados()}
+                                disabled={cargandoAceptados}
+                                className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+                            >
+                                {cargandoAceptados ? "Actualizando..." : "↻ Actualizar"}
+                            </button>
+                        </div>
+
+                        {/* RESUMEN */}
+                        <div className="grid gap-4 sm:grid-cols-2">
+                            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 dark:border-blue-900/60 dark:bg-blue-950/30">
+                                <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">
+                                    En proceso
+                                </p>
+                                <p className="mt-1 text-2xl font-extrabold text-blue-900 dark:text-blue-100">
+                                    {trabajosEnProceso}
+                                </p>
+                                <p className="mt-2 text-xs text-blue-700/80 dark:text-blue-300/80">
+                                    Servicios que todavía no han sido marcados como finalizados.
+                                </p>
+                            </div>
+                            <div className="rounded-2xl border border-green-200 bg-green-50 p-5 dark:border-green-900/60 dark:bg-green-950/30">
+                                <p className="text-sm font-semibold text-green-700 dark:text-green-300">
+                                    Finalizados
+                                </p>
+                                <p className="mt-1 text-2xl font-extrabold text-green-900 dark:text-green-100">
+                                    {trabajosCompletados}
+                                </p>
+                                <p className="mt-2 text-xs text-green-700/80 dark:text-green-300/80">
+                                    Servicios finalizados por el cliente o el técnico.
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* BUSCADOR */}
+                        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm dark:border-gray-800 dark:bg-gray-900">
+                            <label className="mb-2 block text-sm font-semibold text-gray-700 dark:text-gray-200">
+                                Buscar entre tus trabajos
+                            </label>
+                            <input
+                                type="text"
+                                value={busquedaAceptados}
+                                onChange={(e) => setBusquedaAceptados(e.target.value)}
+                                placeholder="Buscar por publicación, técnico, oficio o distrito..."
+                                className={inputClass}
+                            />
+                        </div>
+
+                        {errorAceptados && (
+                            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                                {errorAceptados}
+                                <button
+                                    type="button"
+                                    onClick={() => void cargarTrabajosAceptados()}
+                                    className="ml-2 font-semibold underline"
+                                >
+                                    Reintentar
+                                </button>
+                            </div>
+                        )}
+
+                        {cargandoAceptados ? (
+                            <div className="grid gap-5 sm:grid-cols-2">
+                                {[1, 2].map((item) => (
+                                    <div
+                                        key={item}
+                                        className="h-80 animate-pulse rounded-2xl border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900"
+                                    />
+                                ))}
+                            </div>
+                        ) : trabajosAceptadosFiltrados.length === 0 ? (
+                            <div className="rounded-3xl border border-dashed border-gray-300 bg-white px-6 py-16 text-center dark:border-gray-700 dark:bg-gray-900">
+                                <div className="mb-4 text-5xl">📋</div>
+                                <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                                    {busquedaAceptados
+                                        ? "No se encontraron resultados"
+                                        : "Todavía no tienes trabajos aceptados"}
+                                </h3>
+                                <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-gray-500 dark:text-gray-400">
+                                    {busquedaAceptados
+                                        ? "No encontramos trabajos que coincidan con tu búsqueda."
+                                        : "Cuando aceptes una propuesta, podrás consultar el trabajo, finalizarlo y calificar al técnico."}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={() => setActiveTab("PUBLICATIONS")}
+                                    className="mt-6 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                                >
+                                    Volver a mis publicaciones
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="grid gap-5 sm:grid-cols-2">
+                                {trabajosAceptadosFiltrados.map((job) => (
+                                    <article
+                                        key={job.id}
+                                        className="flex flex-col rounded-2xl border border-gray-200 bg-white p-5 shadow-sm transition hover:-translate-y-1 hover:shadow-md dark:border-gray-800 dark:bg-gray-900"
+                                    >
+                                        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                                            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                                                {job.specialty}
+                                            </span>
+                                            {job.status === "IN_PROGRESS" ? (
+                                                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                                                    En proceso
+                                                </span>
+                                            ) : (
+                                                <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-700 dark:bg-green-950 dark:text-green-300">
+                                                    Finalizado
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        <h3 className="mb-2 text-lg font-bold text-gray-900 dark:text-white">
+                                            {job.title}
+                                        </h3>
+                                        <p className="mb-5 line-clamp-3 flex-1 text-sm text-gray-600 dark:text-gray-400">
+                                            {job.description || "Sin descripción disponible."}
+                                        </p>
+
+                                        <div className="space-y-3 rounded-2xl border border-gray-100 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-800/50">
+                                            <div className="flex items-center gap-3">
+                                                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100 text-lg dark:bg-blue-900/50">
+                                                    👨‍🔧
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
+                                                        Técnico asignado
+                                                    </p>
+                                                    <p className="truncate text-sm font-bold text-gray-900 dark:text-white">
+                                                        {job.technicianName}
+                                                    </p>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex justify-between gap-3 border-t border-gray-200 pt-3 text-sm dark:border-gray-700">
+                                                <span className="text-gray-500 dark:text-gray-400">
+                                                    Ubicación
+                                                </span>
+                                                <span className="text-right font-medium text-gray-800 dark:text-gray-200">
+                                                    {job.districtName}
+                                                </span>
+                                            </div>
+
+                                            {job.specificAddress && (
+                                                <div className="flex justify-between gap-3 text-sm">
+                                                    <span className="text-gray-500 dark:text-gray-400">
+                                                        Dirección
+                                                    </span>
+                                                    <span className="max-w-[60%] text-right font-medium text-gray-800 dark:text-gray-200">
+                                                        {job.specificAddress}
+                                                    </span>
+                                                </div>
+                                            )}
+
+                                            <div className="flex justify-between gap-3 text-sm">
+                                                <span className="text-gray-500 dark:text-gray-400">
+                                                    Publicado el
+                                                </span>
+                                                <span className="font-medium text-gray-800 dark:text-gray-200">
+                                                    {formatDate(job.createdAt)}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        {/* SEGUIMIENTO */}
+                                        <div className="mt-5 rounded-2xl border border-gray-200 p-4 dark:border-gray-800">
+                                            <div className="mb-4 flex items-center justify-between gap-2">
+                                                <h4 className="text-sm font-bold text-gray-900 dark:text-white">
+                                                    Seguimiento del servicio
+                                                </h4>
+                                                <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">
+                                                    {job.status === "COMPLETED" ? "100%" : "En ejecución"}
+                                                </span>
+                                            </div>
+
+                                            <div className="mb-3 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+                                                <div
+                                                    className={`h-full rounded-full transition-all ${
+                                                        job.status === "COMPLETED"
+                                                            ? "w-full bg-green-500"
+                                                            : "w-2/3 bg-blue-600"
+                                                    }`}
+                                                />
+                                            </div>
+
+                                            <div className="grid grid-cols-3 gap-2 text-center">
+                                                <div>
+                                                    <span className="mx-auto mb-1 flex h-6 w-6 items-center justify-center rounded-full bg-green-100 text-xs font-bold text-green-700 dark:bg-green-900/50 dark:text-green-300">
+                                                        ✓
+                                                    </span>
+                                                    <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                                                        Aceptado
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <span className={`mx-auto mb-1 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${
+                                                        job.status === "IN_PROGRESS" || job.status === "COMPLETED"
+                                                            ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
+                                                            : "bg-gray-100 text-gray-400 dark:bg-gray-700"
+                                                    }`}>
+                                                        ✓
+                                                    </span>
+                                                    <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                                                        En ejecución
+                                                    </p>
+                                                </div>
+                                                <div>
+                                                    <span className={`mx-auto mb-1 flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold ${
+                                                        job.status === "COMPLETED"
+                                                            ? "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300"
+                                                            : "bg-gray-100 text-gray-400 dark:bg-gray-700"
+                                                    }`}>
+                                                        {job.status === "COMPLETED" ? "✓" : "3"}
+                                                    </span>
+                                                    <p className="text-[10px] text-gray-600 dark:text-gray-400">
+                                                        Finalizado
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* ACCIÓN */}
+                                        <div className="mt-5">
+                                            {job.status === "IN_PROGRESS" ? (
+                                                <button
+                                                    type="button"
+                                                    disabled={finalizandoId !== null}
+                                                    onClick={() => void finalizarTrabajo(job)}
+                                                    className="w-full rounded-xl bg-green-600 px-4 py-3 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-60"
+                                                >
+                                                    {finalizandoId === job.id ? "Finalizando..." : "Finalizar trabajo"}
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void abrirCalificacion(job)}
+                                                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                                                >
+                                                    ⭐ Calificar técnico
+                                                </button>
+                                            )}
+                                        </div>
+                                    </article>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                )}
             </section>
 
-            {/* MODAL DETALLE */}
+            {/* MODAL: DETALLE DE PUBLICACIÓN */}
             {ofertaSeleccionada && (
-                <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 transition-all duration-300 animate-fade-in">
-                    <div className="bg-white rounded-3xl max-w-lg w-full p-8 space-y-6 shadow-2xl border border-gray-100 transform transition-all duration-300 scale-100 animate-scale-up max-h-[90vh] overflow-y-auto">
-                        <div className="flex justify-between items-center border-b border-gray-100 pb-4">
-                            <h3 className="text-lg font-bold text-gray-900">Detalles del Requerimiento</h3>
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/50 p-4 backdrop-blur-sm">
+                    <div className="max-h-[90vh] w-full max-w-4xl space-y-6 overflow-y-auto rounded-3xl border border-gray-100 bg-white p-8 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
+                        <div className="flex items-center justify-between border-b border-gray-100 pb-4 dark:border-gray-700">
+                            <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                                Detalles del Requerimiento
+                            </h3>
                             <button
                                 type="button"
                                 onClick={cerrarModal}
-                                className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 font-bold flex items-center justify-center text-xs transition-colors duration-200"
+                                className="flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-xs text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
                             >
                                 ✕
                             </button>
                         </div>
 
                         {cargandoDetalle ? (
-                            <p role="status" className="text-sm text-gray-500">Cargando detalle...</p>
+                            <p role="status" className="text-sm text-gray-500">
+                                Cargando detalle...
+                            </p>
                         ) : errorDetalle ? (
-                            <div role="alert" className="text-sm text-red-600">
+                            <div role="alert" className="text-sm text-red-600 dark:text-red-400">
                                 {errorDetalle}
-                                <button type="button" onClick={() => setRecargaDetalle((prev) => prev + 1)} className="ml-3 underline">Reintentar</button>
+                                <button
+                                    type="button"
+                                    onClick={() => setRecargaDetalle((prev) => prev + 1)}
+                                    className="ml-3 underline"
+                                >
+                                    Reintentar
+                                </button>
                             </div>
                         ) : detalle && (
-                        <div className="space-y-6 transition-all duration-300">
-                            <div>
-                                <span className="px-3 py-1 rounded-full bg-blue-50 text-blue-600 text-xs font-semibold">
-                                    {detalle.specialty}
-                                </span>
-                                <h4 className="text-xl font-bold text-gray-900 mt-2">
-                                    {detalle.title}
-                                </h4>
-                            </div>
+                            <div className="space-y-6">
+                                <div>
+                                    <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-600 dark:bg-blue-950/60 dark:text-blue-300">
+                                        {detalle.specialty}
+                                    </span>
+                                    <h4 className="mt-2 text-xl font-bold text-gray-900 dark:text-white">
+                                        {detalle.title}
+                                    </h4>
+                                </div>
 
-                            <div className="bg-gray-50/80 p-4 rounded-2xl space-y-2 text-xs border border-gray-100">
-                                <div className="flex justify-between">
-                                    <span className="text-gray-400">Estado:</span>
-                                    <span className="font-bold text-emerald-600">{({ OPEN: "Publicada", IN_PROGRESS: "En progreso", COMPLETED: "Completada", CANCELED: "Cancelada" }[detalle.status] ?? detalle.status)}</span>
+                                <div className="space-y-2 rounded-2xl border border-gray-100 bg-gray-50/80 p-4 text-xs dark:border-gray-700 dark:bg-gray-800">
+                                    <div className="flex justify-between">
+                                        <span className="text-gray-400">Estado:</span>
+                                        <span className="font-bold text-blue-600">
+                                            {({
+                                                OPEN: "Publicada",
+                                                IN_PROGRESS: "En progreso",
+                                                COMPLETED: "Completada",
+                                                CANCELED: "Cancelada",
+                                            } as Record<string, string>)[detalle.status] ?? detalle.status}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                        <span className="text-gray-400">Cliente:</span>
+                                        <span className="text-right font-semibold text-gray-800 dark:text-gray-200">
+                                            {detalle.clientName}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                        <span className="text-gray-400">Profesional asignado:</span>
+                                        <span className="text-right font-semibold text-gray-800 dark:text-gray-200">
+                                            {detalle.technicianName || "Sin asignar"}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                        <span className="text-gray-400">Ubicación:</span>
+                                        <span className="text-right font-semibold text-gray-800 dark:text-gray-200">
+                                            {[
+                                                detalle.ubigeoDistrictName,
+                                                detalle.ubigeoProvinceName,
+                                                detalle.ubigeoDepartmentName,
+                                            ].filter(Boolean).join(", ") || "No disponible"}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                        <span className="text-gray-400">Dirección:</span>
+                                        <span className="text-right font-semibold text-gray-800 dark:text-gray-200">
+                                            {detalle.specificAddress || "No disponible"}
+                                        </span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                        <span className="text-gray-400">Fecha de creación:</span>
+                                        <span className="font-semibold text-gray-800 dark:text-gray-200">
+                                            {new Date(detalle.createdAt).toLocaleString("es-PE")}
+                                        </span>
+                                    </div>
                                 </div>
-                                <div className="flex justify-between gap-4">
-                                    <span className="text-gray-400">Cliente:</span>
-                                    <span className="font-semibold text-gray-800 text-right">{detalle.clientName}</span>
-                                </div>
-                                <div className="flex justify-between gap-4">
-                                    <span className="text-gray-400">Profesional asignado:</span>
-                                    <span className="font-semibold text-gray-800 text-right">{detalle.technicianName || "Sin asignar"}</span>
-                                </div>
-                                <div className="flex justify-between gap-4">
-                                    <span className="text-gray-400">Ubicación:</span>
-                                    <span className="font-semibold text-gray-800 text-right">{[detalle.ubigeoDistrictName, detalle.ubigeoProvinceName, detalle.ubigeoDepartmentName].filter(Boolean).join(", ") || "No disponible"}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-gray-400">Dirección:</span>
-                                    <span className="font-semibold text-gray-800">{detalle.specificAddress || "No disponible"}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-gray-400">Presupuesto Máximo:</span>
-                                    <span className="font-bold text-blue-600">{formatearSoles(detalle.maxBudget)}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-gray-400">Fecha de Creación:</span>
-                                    <span className="font-semibold text-gray-800">{new Date(detalle.createdAt).toLocaleString("es-PE")}</span>
-                                </div>
-                            </div>
 
-                            <div className="space-y-1">
-                                <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Descripción</span>
-                                <p className="text-xs text-gray-600 leading-relaxed bg-white border border-gray-100 p-4 rounded-2xl whitespace-pre-wrap">
-                                    {detalle.description || "No disponible"}
-                                </p>
-                            </div>
+                                <div className="space-y-1">
+                                    <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                                        Descripción
+                                    </span>
+                                    <p className="whitespace-pre-wrap rounded-2xl border border-gray-100 bg-white p-4 text-xs leading-relaxed text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                                        {detalle.description || "No disponible"}
+                                    </p>
+                                </div>
 
-                            <div className="flex gap-3 pt-2">
+                                <DiagnosticOffersTable
+                                    key={detalle.id}
+                                    jobId={detalle.id}
+                                    isOpen={detalle.status === "OPEN"}
+                                    focusOnMount={enfocarPropuestas}
+                                    onAccepted={actualizarOfertasAceptadas}
+                                />
+
                                 <button
                                     type="button"
                                     onClick={() => handleEliminar(ofertaSeleccionada.id)}
                                     disabled={eliminandoId !== null}
-                                    className="w-full py-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-2xl text-xs transition-all duration-300 disabled:opacity-50"
+                                    className="w-full rounded-2xl bg-red-50 py-3 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50 dark:bg-red-950/40 dark:text-red-400"
                                 >
-                                    {eliminandoId === ofertaSeleccionada.id ? "Eliminando..." : "Eliminar Requerimiento"}
+                                    {eliminandoId === ofertaSeleccionada.id
+                                        ? "Eliminando..."
+                                        : "Eliminar Requerimiento"}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* MODAL: CALIFICAR TÉCNICO */}
+            {trabajoCalificar && (
+                <div
+                    className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+                    onClick={cerrarCalificacion}
+                >
+                    <div
+                        className="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-3xl bg-white shadow-2xl dark:bg-gray-900"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        {/* CABECERA */}
+                        <div className="relative overflow-hidden rounded-t-3xl bg-gradient-to-r from-blue-600 via-blue-700 to-indigo-800 px-6 py-7 text-white">
+                            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.18),transparent_50%)]" />
+                            <div className="relative flex items-start justify-between gap-4">
+                                <div>
+                                    <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-blue-100">
+                                        {existingReview ? "Calificación registrada" : "Finalización del servicio"}
+                                    </span>
+                                    <h2 className="text-2xl font-extrabold">
+                                        {existingReview ? "Tu calificación" : "Califica al técnico"}
+                                    </h2>
+                                    <p className="mt-2 text-sm leading-relaxed text-blue-100">
+                                        {existingReview
+                                            ? "Ya registraste tu opinión sobre este profesional. Puedes consultar la calificación, pero no modificarla."
+                                            : "El servicio fue marcado como finalizado. Comparte tu experiencia con el profesional."}
+                                    </p>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={cerrarCalificacion}
+                                    disabled={ratingSubmitting || ratingLoading}
+                                    className="rounded-xl border border-white/20 bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-50"
+                                    aria-label="Cerrar calificación"
+                                >
+                                    ✕
                                 </button>
                             </div>
                         </div>
-                        )}
+
+                        <form onSubmit={handleRatingSubmit} className="space-y-6 p-6">
+                            {/* RESUMEN DEL TRABAJO */}
+                            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-800 dark:bg-gray-800/60">
+                                <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                                    Trabajo finalizado
+                                </p>
+                                <h3 className="mt-1 text-lg font-bold text-gray-900 dark:text-white">
+                                    {trabajoCalificar.title}
+                                </h3>
+                                <div className="mt-3 space-y-2 text-sm text-gray-600 dark:text-gray-300">
+                                    <p><strong>Técnico:</strong> {trabajoCalificar.technicianName}</p>
+                                    <p><strong>Especialidad:</strong> {trabajoCalificar.specialty}</p>
+                                    <p><strong>Distrito:</strong> {trabajoCalificar.districtName}</p>
+                                </div>
+                            </div>
+
+                            {/* CARGANDO CALIFICACIÓN */}
+                            {ratingLoading ? (
+                                <div className="rounded-xl border border-blue-200 bg-blue-50 p-5 text-center dark:border-blue-900 dark:bg-blue-950/30">
+                                    <p className="text-sm font-semibold text-blue-700 dark:text-blue-300">
+                                        Consultando calificación anterior...
+                                    </p>
+                                    <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">
+                                        Estamos verificando si ya calificaste este trabajo.
+                                    </p>
+                                </div>
+                            ) : (
+                                <>
+                                    {/* ESTRELLAS */}
+                                    <div className="text-center">
+                                        <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                                            ¿Cómo fue tu experiencia con el técnico?
+                                        </h3>
+                                        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                                            {existingReview
+                                                ? "Esta es la calificación que registraste."
+                                                : "Selecciona una calificación de 1 a 5 estrellas."}
+                                        </p>
+
+                                        <div className="mt-5 flex justify-center gap-2">
+                                            {[1, 2, 3, 4, 5].map((star) => (
+                                                <button
+                                                    key={star}
+                                                    type="button"
+                                                    disabled={!!existingReview || ratingSubmitting}
+                                                    onClick={() =>
+                                                        setRatingForm((prev) => ({
+                                                            ...prev,
+                                                            rating: star,
+                                                        }))
+                                                    }
+                                                    className={`text-4xl transition ${
+                                                        existingReview
+                                                            ? "cursor-default"
+                                                            : "hover:scale-110"
+                                                    } ${
+                                                        ratingForm.rating >= star
+                                                            ? "text-amber-400"
+                                                            : "text-gray-300 dark:text-gray-600"
+                                                    }`}
+                                                    aria-label={`${star} estrellas`}
+                                                >
+                                                    ★
+                                                </button>
+                                            ))}
+                                        </div>
+
+                                        <p className="mt-3 text-sm font-semibold text-gray-700 dark:text-gray-200">
+                                            {ratingForm.rating === 1 && "Muy mala experiencia"}
+                                            {ratingForm.rating === 2 && "Mala experiencia"}
+                                            {ratingForm.rating === 3 && "Experiencia regular"}
+                                            {ratingForm.rating === 4 && "Buena experiencia"}
+                                            {ratingForm.rating === 5 && "Excelente experiencia"}
+                                            {ratingForm.rating === 0 && "Aún no has seleccionado una calificación"}
+                                        </p>
+                                    </div>
+
+                                    {/* COMENTARIO */}
+                                    <div>
+                                        <div className="mb-2 flex items-center justify-between gap-3">
+                                            <label className="text-sm font-semibold text-gray-900 dark:text-white">
+                                                Comentario sobre el técnico
+                                            </label>
+                                            <span className="text-xs text-gray-400">
+                                                {ratingForm.comment.length}/1000
+                                            </span>
+                                        </div>
+                                        <textarea
+                                            rows={4}
+                                            maxLength={1000}
+                                            value={ratingForm.comment}
+                                            disabled={!!existingReview || ratingSubmitting}
+                                            onChange={(e) =>
+                                                setRatingForm((prev) => ({
+                                                    ...prev,
+                                                    comment: e.target.value,
+                                                }))
+                                            }
+                                            placeholder="Cuéntanos cómo fue el servicio, la puntualidad, la comunicación y el resultado del trabajo. (Opcional)"
+                                            className={`${inputClass} resize-none disabled:cursor-not-allowed disabled:opacity-70`}
+                                        />
+                                        {existingReview && (
+                                            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                                El comentario está bloqueado porque la calificación ya fue registrada.
+                                            </p>
+                                        )}
+                                    </div>
+                                </>
+                            )}
+
+                            {/* AVISO */}
+                            {!ratingLoading && (
+                                <div className={`flex gap-3 rounded-xl border p-4 ${
+                                    existingReview
+                                        ? "border-green-200 bg-green-50 dark:border-green-900/60 dark:bg-green-950/30"
+                                        : "border-blue-200 bg-blue-50 dark:border-blue-900/60 dark:bg-blue-950/30"
+                                }`}>
+                                    <span className="text-lg">
+                                        {existingReview ? "✓" : "ℹ️"}
+                                    </span>
+                                    <p className={`text-xs leading-relaxed ${
+                                        existingReview
+                                            ? "text-green-800 dark:text-green-300"
+                                            : "text-blue-800 dark:text-blue-300"
+                                    }`}>
+                                        {existingReview
+                                            ? "Esta calificación ya está guardada. No es posible editarla ni enviar otra calificación para el mismo trabajo."
+                                            : "Puedes registrar una calificación por trabajo."}
+                                    </p>
+                                </div>
+                            )}
+
+                            {ratingError && (
+                                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+                                    {ratingError}
+                                </div>
+                            )}
+
+                            {ratingFeedback && (
+                                <div className="rounded-xl border border-green-200 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950/30 dark:text-green-300">
+                                    {ratingFeedback}
+                                </div>
+                            )}
+
+                            {/* BOTONES */}
+                            <div className="flex flex-col-reverse gap-3 border-t border-gray-100 pt-5 dark:border-gray-800 sm:flex-row sm:justify-end">
+                                <button
+                                    type="button"
+                                    onClick={cerrarCalificacion}
+                                    disabled={ratingSubmitting || ratingLoading}
+                                    className="rounded-xl border border-gray-300 px-5 py-3 text-sm font-semibold hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:hover:bg-gray-800"
+                                >
+                                    Cerrar
+                                </button>
+
+                                {!existingReview && (
+                                    <button
+                                        type="submit"
+                                        disabled={ratingSubmitting || ratingLoading}
+                                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                        {ratingSubmitting
+                                            ? "Registrando..."
+                                            : "Enviar calificación"}
+                                    </button>
+                                )}
+clear
+                                {existingReview && (
+                                    <span className="inline-flex items-center justify-center gap-2 rounded-xl bg-green-100 px-6 py-3 text-sm font-semibold text-green-700 dark:bg-green-950/50 dark:text-green-300">
+                                        ✓ Calificación registrada
+                                    </span>
+                                )}
+                            </div>
+                        </form>
                     </div>
                 </div>
             )}
